@@ -23,6 +23,9 @@ def test_child_is_chatgpt_only_readonly_and_independent(tmp_path):
     assert "--ephemeral" in command
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
+    assert "features.multi_agent=false" in command
+    assert "features.plugins=false" in command
+    assert "features.hooks=false" in command
     assert "resume" not in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
 
