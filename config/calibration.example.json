@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "completed": false,
+  "measured_at": null,
+  "operator": null,
+  "pwm_hz": null,
+  "pan": {
+    "channel": 0,
+    "min_cd": null,
+    "neutral_cd": null,
+    "max_cd": null,
+    "pulse_min_us": null,
+    "pulse_neutral_us": null,
+    "pulse_max_us": null,
+    "direction_sign": null,
+    "max_rate_deg_s": null
+  },
+  "tilt": {
+    "channel": 1,
+    "min_cd": null,
+    "neutral_cd": null,
+    "max_cd": null,
+    "pulse_min_us": null,
+    "pulse_neutral_us": null,
+    "pulse_max_us": null,
+    "direction_sign": null,
+    "max_rate_deg_s": null
+  },
+  "mechanical_check_passed": false,
+  "power_check_passed": false
+}

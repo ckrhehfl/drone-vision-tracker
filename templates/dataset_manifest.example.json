@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "status": "example_only",
+  "dataset_version": null,
+  "sessions": [
+    {
+      "session_id": "EXAMPLE_SESSION_01",
+      "split": "train",
+      "location_label": null,
+      "camera_settings": null,
+      "distance_m": null,
+      "original_video": null,
+      "images": []
+    }
+  ],
+  "split_rule": "one_capture_session_in_one_split_only"
+}

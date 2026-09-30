@@ -1,0 +1,44 @@
+# Python / local environment
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Credentials / local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config/local/
+.codex/
+.codex-log/
+
+# Raw media / model artifacts / runs
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.pt
+*.pth
+*.onnx
+*.engine
+data/raw/
+data/extracted/
+data/dataset/
+models/local/
+runs/
+logs/
+*.log
+
+# Local OS/editor files
+.DS_Store
+Thumbs.db
+~$*.docx
+.vscode/
+.idea/

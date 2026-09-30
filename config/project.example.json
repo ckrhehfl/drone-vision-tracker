@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "status": "design_example_not_runtime",
+  "hardware_enabled": false,
+  "input": {
+    "kind": "video",
+    "path": null,
+    "camera_index": null,
+    "requested_width": 1920,
+    "requested_height": 1080,
+    "requested_fps": 60,
+    "max_queued_frames": 1
+  },
+  "vision": {
+    "model_path": null,
+    "model_family": "lightweight_yolo_custom",
+    "model_version": null,
+    "input_size": 640,
+    "tracker": "botsort",
+    "reid_enabled": false,
+    "confidence_threshold": null
+  },
+  "tracking": {
+    "max_targets": 1,
+    "acquire_frames": 3,
+    "acquire_window_s": 0.5,
+    "short_loss_s": 0.5,
+    "reset_after_loss_s": 2.0,
+    "search_mode": "hold_view",
+    "move_on_predicted_only": false
+  },
+  "control": {
+    "kind": "P_with_dead_zone",
+    "aim_x_ratio": 0.5,
+    "aim_y_ratio": 0.5,
+    "dead_zone_ratio": null,
+    "kp_pan": null,
+    "kp_tilt": null,
+    "kd_pan": 0.0,
+    "kd_tilt": 0.0,
+    "max_frame_age_ms": 100,
+    "max_rate_deg_s": null
+  },
+  "serial": {
+    "enabled": false,
+    "port": null,
+    "baud_rate": 115200,
+    "max_command_hz": 20,
+    "watchdog_ms": 500,
+    "protocol_version": 1,
+    "require_explicit_arm": true
+  },
+  "evaluation_targets": {
+    "processing_fps_min": 20,
+    "host_latency_p95_ms_max": 100,
+    "center_tolerance_width_ratio": 0.05,
+    "center_tolerance_height_ratio": 0.05,
+    "center_hold_ratio_min": 0.8,
+    "settling_exclusion_s": 1.0
+  },
+  "optional_indicator": {
+    "included_in_mvp": false,
+    "automatic_laser_output": false
+  }
+}
