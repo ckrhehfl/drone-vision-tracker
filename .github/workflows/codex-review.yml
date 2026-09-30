@@ -1,0 +1,14 @@
+name: Codex Review (subscription setup pending)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pending-subscription-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Refuse an unverified review result
+        run: |
+          echo '::error::Run the local ChatGPT subscription reviewer after CI. Result publishing is not enabled.'
+          exit 1

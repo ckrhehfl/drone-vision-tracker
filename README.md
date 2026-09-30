@@ -23,7 +23,7 @@
 ## Codex 작업 시작
 저장소 루트에서 `AGENTS.md`를 먼저 읽고 `prompts/implementation.md`의 작업 프롬프트를 사용합니다. 첫 범위는 P0 환경 확인과 P1 영상 입력 준비입니다. 구현 후에는 `prompts/review.md`로 별도 리뷰 작업을 시작합니다.
 
-설치 방식, 플러그인, MCP, GitHub 자동 리뷰 연결과 비용 설정은 아직 결정·설정하지 않았습니다. 여기 있는 지침은 자동 실행 환경이 아닙니다.
+GitHub Actions CI와 ChatGPT 구독을 사용하는 로컬 읽기 전용 리뷰를 구축 중입니다. [구축 상태](docs/automation/setup-status.md)와 [실행 방법](docs/automation/development.md)을 확인합니다. 별도 유료 API·자동 Fix·Auto Merge는 비활성입니다. 로컬 리뷰에는 PC 가동이 필요합니다.
 
 ## GitHub에 올리기
 ZIP을 풀고 **README.md와 AGENTS.md가 있는 폴더를 저장소 루트**로 사용합니다. ZIP 한 개를 저장소에 올리는 것이 아니라 압축을 푼 파일·폴더를 커밋합니다. 아래는 새 로컬 폴더를 새 빈 원격 저장소에 올릴 때의 예시입니다. 기존 저장소에는 `git init`을 반복하지 말고 기존 이력을 유지합니다.
@@ -48,3 +48,15 @@ python tools/check_design_package.py
 ```
 
 실제 인식·추종 성능 시험은 P1~P6 구현 이후 수행해야 합니다.
+
+## 개발 검증
+
+Python 3.11.0에서 `python -m venv .venv`로 환경을 만들고 활성화한 뒤 실행합니다.
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m tools.ci
+```
+
+Ruff·pytest·syntax/import·설정·문서 검사를 같은 명령으로 로컬과 CI에서 실행합니다.
+이는 카메라·모델 정확도·Serial·모터 시험을 대체하지 않습니다.

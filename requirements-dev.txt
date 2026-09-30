@@ -1,0 +1,14 @@
+# Validated with CPython 3.11.0; lock all resolved development dependencies.
+ruff==0.11.13
+pytest==8.3.5
+jsonschema==4.23.0
+PyYAML==6.0.2
+attrs==26.1.0
+colorama==0.4.6; sys_platform == "win32"
+iniconfig==2.3.0
+jsonschema-specifications==2025.9.1
+packaging==26.3
+pluggy==1.6.0
+referencing==0.37.0
+rpds-py==2026.6.3
+typing_extensions==4.16.0

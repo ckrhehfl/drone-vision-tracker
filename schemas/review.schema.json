@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Independent Codex review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reviewed_commit",
+    "reviewed_base",
+    "scope_files",
+    "status",
+    "blocking_findings",
+    "non_blocking_findings",
+    "test_summary",
+    "unverified_items"
+  ],
+  "properties": {
+    "reviewed_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "reviewed_base": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "scope_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "CHANGES_REQUESTED",
+        "HUMAN_DECISION_REQUIRED",
+        "PHYSICAL_TEST_REQUIRED"
+      ]
+    },
+    "blocking_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "area",
+          "file",
+          "line",
+          "issue",
+          "reason",
+          "suggested_fix",
+          "validation"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "area": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "issue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "suggested_fix": {
+            "type": "string",
+            "minLength": 1
+          },
+          "validation": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "non_blocking_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "area",
+          "file",
+          "line",
+          "issue",
+          "reason",
+          "suggested_fix",
+          "validation"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ]
+          },
+          "area": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "issue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "suggested_fix": {
+            "type": "string",
+            "minLength": 1
+          },
+          "validation": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "test_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ci",
+        "commands",
+        "notes"
+      ],
+      "properties": {
+        "ci": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_RUN"
+          ]
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "unverified_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "merge_blocker",
+          "observation",
+          "expected_result"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "minLength": 1
+          },
+          "merge_blocker": {
+            "type": "boolean"
+          },
+          "observation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_result": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
