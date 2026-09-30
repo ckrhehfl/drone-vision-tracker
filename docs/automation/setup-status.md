@@ -93,5 +93,14 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
   schema의 허용 severity를 제한하고 blocking 거부/non-blocking 보존 회귀 테스트를 추가했다.
   수정 후 최신 SHA의 CI·독립 재리뷰 증거는 [PR #1](https://github.com/ckrhehfl/drone-vision-tracker/pull/1)에 기록한다.
 - Actions 결과 전달과 작은 테스트 PR의 전체 dry-run은 아직 미검증이다. Phase 6 완료가 아니다.
-- 다음 권한 gate는 별도 결과 게시 job의 `statuses: write`다. 아직 권한을 변경하지 않았다.
+- 2026-10-01 사용자가 별도 결과 게시 job의 `statuses: write`를 승인했다.
 - PC 가동이 로컬 리뷰의 전제다. GitHub Actions CI는 PC 없이 실행된다.
+
+## 결과 게시 연결 — 2026-10-01
+
+- PR #1의 `cb16cd7` CI 122 tests 및 독립 3개 scope PASS를 재확인하고 초기 통합했다.
+  main 통합 커밋은 `56794fb`다. 운영 Auto Merge 활성화와는 별개인 bootstrap이다.
+- 결과 게시 workflow를 별도 PR에서 구현한다. 검증 job은 read, 게시 job만 statuses write다.
+- 모든 JSON과 증거를 기본 브랜치 코드로 검증한다. 소유자의 main dispatch만 허용하며,
+  CLI 진단 로그·구독 인증 파일·head 코드 실행은 전달하지 않는다.
+- 작은 PR을 이용한 실제 Actions 전달/성공/실패/새 SHA 검증 후 Phase 6 완료를 기록한다.
