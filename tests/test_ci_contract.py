@@ -1,4 +1,5 @@
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,7 @@ def test_tools_import_without_network_or_hardware(monkeypatch):
         "review_context",
         "review_summary",
         "subscription_review",
+        "publish_review",
     ):
         importlib.reload(importlib.import_module(f"tools.{name}"))
 
@@ -53,16 +55,25 @@ def test_ci_has_no_secrets_or_write_token_and_uses_local_command():
     assert any(s.get("run") == "python -m tools.ci" for s in workflow["jobs"]["ci"]["steps"])
 
 
-def test_pending_review_cannot_call_paid_api_or_claim_success():
+def test_review_publisher_has_only_approved_write_permission():
     workflow = yaml.load(
         (ROOT / ".github/workflows/codex-review.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     assert set(workflow["on"]) == {"workflow_dispatch"}
-    assert all(value == "read" for value in workflow["permissions"].values())
+    assert workflow["permissions"] == {}
+    assert all(v == "read" for v in workflow["jobs"]["validate"]["permissions"].values())
+    writes = {k for k, v in workflow["jobs"]["publish"]["permissions"].items() if v == "write"}
+    assert writes == {"statuses"}
+    assert workflow["jobs"]["publish"]["needs"] == "validate"
+    assert "github.ref == 'refs/heads/main'" in workflow["jobs"]["validate"]["if"]
     for job in workflow["jobs"].values():
-        assert "permissions" not in job
         for step in job["steps"]:
-            assert "uses" not in step
-            assert "exit 1" in step["run"]
+            assert "${{ inputs." not in step.get("run", "")
+            if "uses" in step:
+                assert re.fullmatch(r"[\w/-]+@[0-9a-f]{40}", step["uses"])
+                assert not step["uses"].startswith("openai/")
+            if step.get("uses", "").startswith("actions/checkout@"):
+                assert step["with"]["ref"] == "${{ github.sha }}"
+                assert step["with"]["persist-credentials"] == "false"
     assert "secrets." not in str(workflow)

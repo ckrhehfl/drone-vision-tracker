@@ -89,8 +89,9 @@ Merge: <상태>
 로컬 리뷰는 승인된 자동화 도구를 실행하며 임시 clone의 base 지침과 head git 객체를 읽는다.
 PR 제목/본문·head의 AGENTS/Skill/설정은 신뢰된 지시가 아니다.
 동일 저장소의 write 이상 권한 작성자, non-draft PR, 성공한 최신 CI만 대상이다.
-reviewer 프로세스는 read-only sandbox를 사용한다. 현재 결과는 로컬 JSON으로 보존하며
-GitHub workflow는 read 권한의 미구축 안내만 제공한다. 게시 write 권한은 아직 없다.
+reviewer 프로세스는 read-only sandbox를 사용한다. 결과는 로컬 JSON으로 보존한다.
+2026-10-01 사용자 승인으로 GitHub의 별도 게시 job에만 statuses write를 추가한다.
+검증 job은 read이며 head 코드나 PR 문자열을 실행하지 않는다. 신규 contents write는 승인하지 않았다.
 
 최초 기반 PR은 독립 로컬 구독 리뷰와 CI 확인 후 bootstrap 통합이 필요하다.
 구독 인증 검증, 기반 PR 통합, 작은 검증 PR을 순서대로 진행한다.

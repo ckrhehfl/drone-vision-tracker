@@ -80,9 +80,20 @@ CLI 진단 로그는 로컬에서만 확인하고 자동 업로드하지 않는�
 PR의 스크립트·설정·AGENTS를 실행하지 않는다. 독립 테스트 실행은 미검증으로 기록한다.
 tracked 파일/작업 트리/Git refs의 fingerprint 변화도 검사한다.
 
-`codex-review.yml`의 API 호출은 제거했다. 현재는 수동 실행 시 미구축 상태를 실패로 알리는
-대기 workflow다. CI 성공이나 이 workflow의 미실행을 리뷰 PASS로 사용할 수 없다.
-구조화 결과를 Actions에서 검증·게시하는 연결은 다음 단계이며 현재 로컬 JSON은 merge 승인이 아니다.
+`codex-review.yml`은 로컬 reviewer의 전체 JSON을 받아 별도 read-only job에서 검증하고,
+게시 job에서 현재 base/head/CI를 다시 확인한 후 `codex-review` commit status를 기록한다.
+승인된 유일한 쓰기 권한은 게시 job의 `statuses: write`다. 결과/전체 finding은 Actions summary와
+7일 artifact에 보존한다. CI 성공이나 workflow 미실행을 리뷰 PASS로 사용할 수 없다.
+
+```powershell
+.venv/Scripts/python -m tools.publish_review submit --directory artifacts/subscription-review/<실행>
+```
+
+전달은 저장소 소유자의 기존 gh 인증으로 main에 workflow_dispatch하며 Secret을 새로 만들지 않는다.
+입력은 신뢰된 로컬 운영자가 생성하는 증거다. JSON 자체가 AI 실행의 암호학적 증명은 아니다.
+전체 dispatch JSON이 UTF-8 60,000 bytes를 넘으면 원본을 보존하고 전달을 거부한다. finding을 자르지 않는다.
+검증 실패/skip 또는 과거 base/CI에 게시된 상태는 병합 승인으로 사용할 수 없다. Phase 9 gate는
+현재 CI와 게시 workflow 실행 증거까지 확인해야 하며 status 문자열 하나만 믿지 않는다.
 
 GitHub 기본 `@codex review`는 별도 공식 구독 연동이다. 해당 연동의 자유 형식 결과만으로
 이 저장소의 전체 finding·JSON Schema·최신 SHA 검증을 대체하지 않는다.
