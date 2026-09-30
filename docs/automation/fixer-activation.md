@@ -7,14 +7,15 @@ Phase 6은 [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)에�
 ## 권한 분리
 
 이미 승인한 GitHub 게시 job의 `statuses: write`는 그대로 둔다.
-새로 필요한 권한은 독립 로컬 Fixer의 임시 checkout 파일 수정과, 별도 로컬 publisher의
-해당 PR feature branch 갱신이다. GitHub Actions의 `contents: write`는 추가하지 않는다.
+다음 단계는 독립 로컬 Fixer의 임시 checkout 파일 수정과, 별도 로컬 publisher의
+해당 PR feature branch 갱신이다. 사용자가 요청한 단계별 자동 수정 범위에서 기존 로컬
+권한을 사용하며 GitHub Actions의 `contents: write`는 추가하지 않는다.
 리뷰어는 계속 read-only이고 Fixer는 별도 ChatGPT 구독 세션이다. 새 API Secret은 필요 없다.
 
 Fixer 자식은 workspace-write sandbox, network 비활성, 승인 never로 실행한다.
 GitHub/API 환경변수를 전달하지 않고 commit/push·계정 정보 조회·하드웨어를 금지한다.
-로컬 로그인 저장소 전체를 OS 계정 수준에서 분리한 격리는 아니다. 새 sandbox 쓰기 실행은
-사용자의 별도 권한 승인 이후에만 검증한다.
+로컬 로그인 저장소 전체를 OS 계정 수준에서 분리한 격리는 아니다. sandbox 쓰기 실행은
+Phase 6 성공 후 격리된 모의 대상에서 검증하며 새로운 계정/Secret 권한이 필요하면 요청한다.
 
 parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행한다.
 새 GITHUB_TOKEN이나 PAT를 전달하지 않으므로 GITHUB_TOKEN push의 CI 억제를 이용하지 않는다.
@@ -45,7 +46,7 @@ CI/리뷰를 기다리는 전체 무인 driver, 보호 규칙, 쓰기 sandbox의
 
 ## 활성화 전 확인
 
-- 사용자 승인: 임시 파일 수정 + 기존 PR feature branch의 제한된 갱신.
+- 승인 범위: 사용자 요청의 임시 파일 수정 + 기존 PR feature branch의 제한된 갱신.
 - main 보호: PR 필수, 관리자 우회 금지, force push/delete 금지, 현재 준비된 required checks.
 - 권한이 부족해 GitHub 설정을 직접 바꿀 수 없으면 정확한 UI 설정을 HUMAN_ACTION_REQUIRED로 안내.
 - 승인된 main의 설정/schema에서만 활성화. PR head의 설정 변경을 활성화 승인으로 신뢰하지 않는다.

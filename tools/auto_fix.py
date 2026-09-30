@@ -1,4 +1,4 @@
-"""Prepare or run one finding-only local fix. Execution is disabled pending approval."""
+"""Prepare or run one finding-only local fix. Activation follows staged verification."""
 
 import argparse
 import ast
@@ -154,7 +154,7 @@ def execute(directory):
     settings = strict_json((ROOT / "config/automation.json").read_text(encoding="utf-8"))
     if not settings["auto_fix_enabled"]:
         raise ValueError(
-            "HUMAN_DECISION_REQUIRED: automatic fixer write permission is not activated"
+            "Automatic fixer is not activated; complete the staged verification first"
         )
     context, report, branch = prepare(directory)
     require_publishing_guards(context)
