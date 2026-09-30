@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
@@ -75,6 +76,8 @@ def test_fixer_uses_separate_subscription_session_with_no_network(tmp_path):
     assert "sandbox_workspace_write.network_access=false" in command
     assert "--output-schema" not in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    if os.name == "nt":
+        assert 'windows.sandbox="elevated"' in command
 
 
 @pytest.fixture

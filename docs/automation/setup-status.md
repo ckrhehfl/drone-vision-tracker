@@ -138,3 +138,5 @@ PR #1에 별도로 기록돼 있다. PR #3은 검증 후 `b9913e6`으로 bootstr
 `execute`는 활성화 설정 전에 프로세스·네트워크·시도 예약을 시작하지 않는다.
 [정확한 권한 범위와 미완료 사항](fixer-activation.md)을 따른다. 실제 자동 수정 0회다.
 GitHub Actions contents write, 새로운 Secret, main 보호 규칙, Auto Merge는 변경하지 않았다.
+Windows 쓰기 sandbox의 일회용 파일 작성 시험은 PASS다. 기존 Windows sandbox 선택을
+명시해야 하며 전체 사용자 설정을 다시 로드하거나 sandbox를 우회하지 않는다.

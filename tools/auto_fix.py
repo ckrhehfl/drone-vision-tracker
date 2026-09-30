@@ -3,6 +3,7 @@
 import argparse
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -78,6 +79,10 @@ def fixer_command(executable, checkout, output):
     schema_index = command.index("--output-schema")
     del command[schema_index : schema_index + 2]
     command[-1:-1] = ["-c", "sandbox_workspace_write.network_access=false"]
+    if os.name == "nt":
+        # --ignore-user-config also omits the installed Windows sandbox selection.
+        # Match this host's already configured sandbox; never fall back to unsandboxed writes.
+        command[-1:-1] = ["-c", 'windows.sandbox="elevated"']
     return command
 
 

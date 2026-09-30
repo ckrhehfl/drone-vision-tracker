@@ -16,6 +16,10 @@ Fixer 자식은 workspace-write sandbox, network 비활성, 승인 never로 실�
 GitHub/API 환경변수를 전달하지 않고 commit/push·계정 정보 조회·하드웨어를 금지한다.
 로컬 로그인 저장소 전체를 OS 계정 수준에서 분리한 격리는 아니다. sandbox 쓰기 실행은
 Phase 6 성공 후 격리된 모의 대상에서 검증하며 새로운 계정/Secret 권한이 필요하면 요청한다.
+Windows에서는 이 PC에 이미 설정된 `windows.sandbox="elevated"`를 명시한다.
+`--ignore-user-config`로 이 선택이 누락되면 read-only로 내려가는 것을 실제 시험에서 확인했다.
+기존 sandbox 선택을 복구한 뒤 일회용 checkout에서 지정 파일 작성/README 불변을 확인했다.
+이는 실제 PR 자동 수정·push 검증이 아니며 unsandboxed fallback도 사용하지 않았다.
 
 parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행한다.
 새 GITHUB_TOKEN이나 PAT를 전달하지 않으므로 GITHUB_TOKEN push의 CI 억제를 이용하지 않는다.
