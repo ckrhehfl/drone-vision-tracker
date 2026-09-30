@@ -42,3 +42,8 @@
 Phase 9에서만 조건부 Auto Merge를 허용한다. 기존 수동 병합 원칙은 그때까지 유지한다.
 MAX_AUTO_FIX_ATTEMPTS=2. 하드웨어·드론 MVP·성능 성공 기준 변경 없음.
 상세 단계 및 실제 증거: [자동화 상태](automation/setup-status.md).
+
+2026-09-30 D19: 사용자가 ChatGPT 구독 방식을 선택했다. GitHub Actions는 CI를 유지하고,
+구조화 독립 리뷰는 현재 PC의 ChatGPT 인증 Codex CLI를 사용한다. 별도 유료 API와 API Secret
+등록 계획은 철회한다. 로그인 파일을 공개 저장소의 CI로 옮기지 않는다.
+PC 가동·구독 사용 한도 조건을 기록하고 기존 JSON/SHA 검증·사람/실물 gate는 유지한다.

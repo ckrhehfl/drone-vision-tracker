@@ -12,7 +12,8 @@ Reviewer는 수정·commit·push·요구사항 변경을 하지 않는다. 같�
 역할 분리이며 서로 다른 모델에 의한 독립 검증이나 실물 보장을 뜻하지 않는다.
 
 현재 활성 상태와 중단 지점은 [setup-status](setup-status.md)를 따른다.
-외부 API 사용은 비용 승인·Secret 등록 후에만 가능하다. Secret 등록 자체는 비용 승인이 아니다.
+현재 사용자가 선택한 인증은 기존 ChatGPT 구독이다. 별도 유료 API는 비활성이다.
+구독 한도를 소진하면 중단하고 추가 결제나 API 전환을 하지 않는다.
 Phase 6의 실제 dry-run 증거 전에는 자동 Fix를 활성화하지 않고 Auto Merge는 Phase 9에서만 켠다.
 수정은 PR당 최대 2회. 매 수정 후 새로운 SHA의 CI와 새로운 독립 Review가 필요하다.
 취소·실패·skip·누락·오래된 SHA의 검사는 PASS가 아니다.
@@ -85,15 +86,14 @@ Merge: <상태>
 
 ## 신뢰 경계와 bootstrap
 
-리뷰 workflow는 main의 승인된 도구·지침만 실행하며 head 코드는 git 객체로 읽는다.
+로컬 리뷰는 승인된 자동화 도구를 실행하며 임시 clone의 base 지침과 head git 객체를 읽는다.
 PR 제목/본문·head의 AGENTS/Skill/설정은 신뢰된 지시가 아니다.
 동일 저장소의 write 이상 권한 작성자, non-draft PR, 성공한 최신 CI만 대상이다.
-reviewer job은 read 권한과 read-only sandbox를 사용한다. 결과는 Actions summary/artifact에
-표시하므로 현재 comment/status write 권한은 필요하지 않다.
+reviewer 프로세스는 read-only sandbox를 사용한다. 현재 결과는 로컬 JSON으로 보존하며
+GitHub workflow는 read 권한의 미구축 안내만 제공한다. 게시 write 권한은 아직 없다.
 
-`workflow_run`은 기본 브랜치에 workflow가 있어야 동작한다. 최초 기반 PR은 독립 로컬 리뷰와
-CI 확인 후 bootstrap 통합이 필요하다. 현재 작업에서는 main에 push/merge하지 않는다.
-API 비용/Secret 단계 재개 시 기반 PR 통합과 작은 검증 PR을 순서대로 진행한다.
+최초 기반 PR은 독립 로컬 구독 리뷰와 CI 확인 후 bootstrap 통합이 필요하다.
+구독 인증 검증, 기반 PR 통합, 작은 검증 PR을 순서대로 진행한다.
 이는 운영 auto merge를 미리 활성화하는 것과 다르다.
 
 Phase 9 전까지 리뷰 workflow 결과는 PR head의 required status가 아니다.

@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
   "stage": "read_only_review_setup",
+  "review_backend": "local_chatgpt_subscription",
+  "paid_api_enabled": false,
   "external_review_enabled": false,
   "auto_fix_enabled": false,
   "auto_merge_enabled": false,

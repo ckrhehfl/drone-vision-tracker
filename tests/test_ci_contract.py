@@ -1,5 +1,4 @@
 import importlib
-import re
 from pathlib import Path
 
 import pytest
@@ -41,6 +40,7 @@ def test_tools_import_without_network_or_hardware(monkeypatch):
         "review",
         "review_context",
         "review_summary",
+        "subscription_review",
     ):
         importlib.reload(importlib.import_module(f"tools.{name}"))
 
@@ -53,22 +53,16 @@ def test_ci_has_no_secrets_or_write_token_and_uses_local_command():
     assert any(s.get("run") == "python -m tools.ci" for s in workflow["jobs"]["ci"]["steps"])
 
 
-def test_review_has_no_mutation_permissions_and_uses_pinned_readonly_action():
+def test_pending_review_cannot_call_paid_api_or_claim_success():
     workflow = yaml.load(
         (ROOT / ".github/workflows/codex-review.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
-    assert set(workflow["on"]) == {"workflow_run"}
+    assert set(workflow["on"]) == {"workflow_dispatch"}
     assert all(value == "read" for value in workflow["permissions"].values())
     for job in workflow["jobs"].values():
         assert "permissions" not in job
         for step in job["steps"]:
-            if "uses" not in step:
-                continue
-            assert re.fullmatch(r"[\w/-]+@[0-9a-f]{40}", step["uses"])
-            if step["uses"].startswith("actions/checkout@"):
-                assert step["with"]["persist-credentials"] == "false"
-                assert step["with"]["ref"] == "${{ github.sha }}"
-            if step["uses"].startswith("openai/codex-action@"):
-                assert step["with"]["sandbox"] == "read-only"
-                assert step["with"]["safety-strategy"] == "drop-sudo"
+            assert "uses" not in step
+            assert "exit 1" in step["run"]
+    assert "secrets." not in str(workflow)

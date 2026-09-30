@@ -15,6 +15,13 @@ from tools.validate_config import strict_json
 
 
 def api(path):
+    if not os.environ.get("GH_TOKEN"):
+        return json.loads(
+            subprocess.check_output(
+                ["gh", "api", "-H", "X-GitHub-Api-Version: 2022-11-28", path],
+                encoding="utf-8",
+            )
+        )
     request = Request(
         "https://api.github.com/" + path,
         headers={
@@ -134,14 +141,17 @@ def validate_ci_evidence(run, latest, jobs):
     return newest
 
 
-def fingerprint():
+def fingerprint(root=ROOT):
+    def local_git(*args):
+        return subprocess.check_output(["git", *args], cwd=root)
+
     digest = hashlib.sha256()
-    digest.update(git("status", "--porcelain=v1", "--untracked-files=all").encode())
-    digest.update(git("show-ref").encode())
-    digest.update(git("rev-parse", "HEAD").encode())
-    for name in git("ls-files", "-z").split("\0"):
+    digest.update(local_git("status", "--porcelain=v1", "--untracked-files=all"))
+    digest.update(local_git("show-ref"))
+    digest.update(local_git("rev-parse", "HEAD"))
+    for name in local_git("ls-files", "-z").decode("utf-8").split("\0"):
         if name:
-            path = ROOT / name
+            path = root / name
             digest.update(name.encode())
             digest.update(str(path.lstat().st_mode).encode())
             digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())

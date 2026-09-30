@@ -50,45 +50,60 @@ merge blocker 여부를 함께 기록한다.
 `.codex/skills`에 사용자가 요청한 원본을 저장한다. 현재 공식 탐색 경로 `.agents/skills`에는
 원본을 읽도록 하는 짧은 진입점을 둔다. symlink 권한이나 별도 플러그인 설치가 필요 없다.
 
-## GitHub 리뷰 활성화 전 조건
+## ChatGPT 구독 리뷰
 
-현재 Secret과 활성화 변수는 없다. 외부 AI를 호출하지 않았다.
-비용 승인 후 사용자는 Settings → Secrets and variables → Actions → New repository secret에서
-`OPENAI_API_KEY`를 등록한다. Secret 값은 채팅에 전달하지 않는다.
-기술적인 모델 선택은 계정의 사용 가능 모델·비용 범위를 확인해 에이전트가 고정한다.
-`CODEX_REVIEW_MODEL` 변수와 `CODEX_REVIEW_ENABLED=true`, trusted base의
-`config/automation.json` 활성화/스키마 변경이 모두 준비되어야 실행한다.
-임의로 현재 false 설정을 바꾸면 안 된다. 예산/호출 한도도 승인 범위로 먼저 설정한다.
-workflow의 20분 timeout과 병렬 2개 제한은 금액 상한이 아니다.
+사용자 선택에 따라 별도 유료 API와 GitHub API Secret은 사용하지 않는다.
+공개 저장소의 표준 Ubuntu GitHub runner에서 CI를 실행하고, 현재 PC에 로그인된
+Codex CLI 0.130.0으로 독립 리뷰를 실행한다. AI 호출은 구독 사용 한도를 소모한다.
+한도/인증/timeout 실패 시 중단하며 유료 API나 추가 크레딧 구매로 자동 전환하지 않는다.
+PC가 꺼져 있으면 CI는 진행할 수 있지만 로컬 리뷰는 진행하지 못한다.
 
-리뷰는 default branch의 workflow_run으로 성공 CI 이후 시작한다. 매 scope는 fresh Codex 세션이다.
+```powershell
+codex login status
+.venv/Scripts/python -m tools.subscription_review --ci-run <최신-CI-run-ID>
+```
+
+CLI는 기존 ChatGPT 인증을 사용하고 API 인증은 거부한다. 인증 파일을 조회·복사·업로드하지 않는다.
+GitHub 조회는 기존 `gh` 로그인으로 수행하며 reviewer 자식 프로세스에는 GitHub/API 키 환경변수를
+전달하지 않는다. reviewer는 독립 임시 clone의 base만 checkout한다. 각 scope는 새 세션이며
+read-only sandbox, 승인 never, 사용자 config/rules 비적용, agent/app/web 도구 비활성으로 실행한다.
+출력은 무시되는 `artifacts/subscription-review/<고유-실행>/`에 보존한다.
+전체 finding은 `result.json`, SHA·CI·파일 불변성 증거는 `evidence.json`이다.
+CLI 진단 로그는 로컬에서만 확인하고 자동 업로드하지 않는다.
+
 현재 API에서 PR이 열림/non-draft/동일 저장소/write 이상 작성자/최신 head/main base인지 다시 확인한다.
 같은 head의 최신 CI run/attempt와 필수 software-checks job 및 Run software checks step이
 모두 완료·성공했는지 검사한다. run 전체가 success여도 실제 검사 step 증거가 없으면 거부한다.
 낮은 run ID를 나중에 재실행할 수 있으므로 각 run 최신 attempt의 API 시작 시각으로
 순서를 판별한다. 이력이 한 페이지를 초과하거나 시각이 없거나 동률이면 승인하지 않는다.
 판정 전에도 현재 SHA를 다시 검사한다. reviewer는 base checkout과 git 객체를 읽고
-PR의 스크립트·설정·AGENTS를 실행하지 않는다. sandbox=read-only, safety-strategy=drop-sudo,
-checkout credential 비저장, 모든 GITHUB_TOKEN 권한 read, 별도 임시 output 경로를 사용한다.
+PR의 스크립트·설정·AGENTS를 실행하지 않는다. 독립 테스트 실행은 미검증으로 기록한다.
 tracked 파일/작업 트리/Git refs의 fingerprint 변화도 검사한다.
 
-현재 결과 게시 범위는 Actions summary와 7일 artifact다. PR 댓글/commit status 쓰기는 하지 않는다.
-리뷰 workflow가 skipped된 것을 PR merge 승인으로 사용할 수 없다.
+`codex-review.yml`의 API 호출은 제거했다. 현재는 수동 실행 시 미구축 상태를 실패로 알리는
+대기 workflow다. CI 성공이나 이 workflow의 미실행을 리뷰 PASS로 사용할 수 없다.
+구조화 결과를 Actions에서 검증·게시하는 연결은 다음 단계이며 현재 로컬 JSON은 merge 승인이 아니다.
+
+GitHub 기본 `@codex review`는 별도 공식 구독 연동이다. 해당 연동의 자유 형식 결과만으로
+이 저장소의 전체 finding·JSON Schema·최신 SHA 검증을 대체하지 않는다.
+OpenAI 공식 문서는 ChatGPT auth.json을 CI로 옮기는 인증 절차를 공개 저장소에 사용하지 말라고
+명시한다. 여기서는 GitHub self-hosted runner도 설치하지 않는다.
 
 ## 단계 6 검증 계획 (아직 실행하지 않음)
 
-기반 PR bootstrap 통합 후 작은 모의 코드와 실패 경로 테스트 PR을 만들고 CI를 확인한다.
-승인된 범위 안에서 외부 리뷰를 한 번 실행해 JSON·artifact·상태·파일 불변성을 확인한다.
+기반 PR에서 로컬 구독 리뷰를 먼저 확인하고 bootstrap 통합 후 작은 모의 테스트 PR을 만든다.
+구독 리뷰의 JSON·상태·파일 불변성을 확인하고 Actions 결과 전달을 별도로 검증한다.
 의도된 작은 결함 또는 schema fixture로 CHANGES_REQUESTED 판정도 확인한다.
 새 head로 갱신해 이전 리뷰가 무효가 되고 새 CI/독립 리뷰가 필요한지 확인한다.
-실행당 head/base/run ID와 비용 증거를 남긴다. 이를 통과한 뒤 Phase 7로 진행한다.
+실행당 head/base/run ID와 인증 방식·미검증 항목을 남긴다. 이를 통과한 뒤 Phase 7로 진행한다.
 
 ## 공식 근거
 
-- [Codex Action](https://learn.chatgpt.com/docs/github-action): API Secret, read-only sandbox, drop-sudo, output schema.
+- [Codex 인증](https://learn.chatgpt.com/docs/auth): ChatGPT 구독 인증과 API 과금 인증의 구분.
+- [GitHub Actions 과금](https://docs.github.com/en/billing/concepts/product-billing/github-actions): 공개 저장소 표준 runner 실행 시간 무료, 별도 저장 용량·대형 runner 과금 조건.
 - [Codex Skill 탐색](https://learn.chatgpt.com/docs/build-skills): repository `.agents/skills`, SKILL.md frontmatter.
 - [Codex 비대화형 실행](https://learn.chatgpt.com/docs/non-interactive-mode): 별도 exec 세션과 structured output.
 - [GitHub workflow_run](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run): default branch 및 비신뢰 코드 주의.
 
-Action은 GitHub에서 확인한 commit SHA에 고정했다. Codex CLI는 실제 로컬 확인 버전 0.130.0에
-고정했지만 GitHub API 리뷰 동작 자체는 단계 6 전까지 미검증이다.
+CI Action은 GitHub에서 확인한 commit SHA에 고정했다. 구독 리뷰의 실제 실행 증거는
+[구축 상태](setup-status.md)와 PR 설명에 기록한다.

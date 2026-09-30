@@ -33,17 +33,18 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
    Ruff, syntax/import, pytest, 설정 검증, 기존 문서 검사 포함.
    Arduino 소스가 새로 생기면 compile check 미설정을 성공으로 숨기지 않는다.
 3. 요청한 `.codex/skills`의 7개 Skill, 리뷰 분할·JSON Schema·SHA 검사·통합 도구.
-4. CI와 읽기 전용 리뷰 workflow. 최신 PR head/CI/작성자 권한을 확인하고
-   base의 신뢰된 도구와 지침만 실행한다. draft/fork/설정 누락에서는 AI를 실행하지 않는다.
-5. API 사용 비용 승인과 `OPENAI_API_KEY` 등록을 별도 gate로 처리한다.
-6. 작은 PR에서 실제 외부 리뷰·JSON·최신 SHA·파일 불변성을 검증한다.
+4. GitHub CI와 로컬 읽기 전용 구독 리뷰. 최신 PR head/CI/작성자 권한을 확인하고
+   base의 신뢰된 지침만 실행한다. draft/fork/인증 누락에서는 AI를 실행하지 않는다.
+5. 기존 ChatGPT 로그인 확인. 사용자 선택에 따라 API 비용/Secret 등록 절차는 제외한다.
+6. 작은 PR에서 실제 구독 리뷰·JSON·최신 SHA·파일 불변성과 Actions 결과 전달을 검증한다.
 7. 6단계 성공 후에만 Fixer 권한을 논의하고 최대 2회 수정 → CI → 새 리뷰를 구현한다.
 8. Decision Gate는 판단만 수행한다. 실물 관찰과 미검증 항목을 명시한다.
 9. 모든 증거가 최신 SHA에 묶이는 것을 검증한 뒤 마지막으로 branch rule/auto merge를 활성화한다.
 
 ## 현재 경계
 
-외부 AI 리뷰, 자동 Fix, 자동 Merge는 비활성이다. 비용·Secret·권한 승인을 추정하지 않는다.
+유료 API, 무인 리뷰 연결, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰 검증을 준비했다.
+기존 ChatGPT 구독 사용은 사용자 선택이며 새 비용·Secret·권한 승인을 추정하지 않는다.
 기존 문서의 수동 병합 원칙은 이번 사용자 요청에 따라 **9단계 검증 완료 후에만**
 조건부 자동 병합으로 확장한다. 하드웨어와 MVP 요구사항은 바뀌지 않는다.
 원래 `PACKAGE_SHA256.json`은 최초 v1.0 배포 스냅샷의 해시이며 현재 브랜치 manifest가 아니다.
@@ -75,7 +76,17 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 - 리뷰 scope는 실제 논리 영역으로 묶어 현재 기반 변경을 3개 영역으로 분할한다.
   작은 문서 하나마다 독립 API 실행을 만들지 않는다.
 - Arduino compile: 소스 없음으로 SKIP. 카메라/AI 품질/Serial/서보/펌웨어 업로드/레이저 미실행.
-- 다음 최초 gate: Phase 5 API 사용에 새 비용과 Secret이 필요하다.
-  비용 승인을 받기 전 Secret 등록이나 외부 리뷰 활성화를 요구하지 않는다.
+- 이전 API 비용/Secret gate는 2026-09-30 사용자의 구독 방식 선택으로 철회했다.
 - 설치된 Auto Fixer 실행 0회. 기반 구축 중 Builder 리뷰 수정 2회.
   Auto Merge 비활성, main 직접 push/권한 변경 없음.
+
+## 구독 방식 전환 — 2026-09-30
+
+- `codex login status`: Logged in using ChatGPT. 새 API Secret 불필요.
+- CI는 공개 저장소의 표준 Ubuntu runner를 유지한다. 별도 AI API 요금과 runner 실행 시간을 구분한다.
+- API를 호출하던 workflow를 제거하고 미구축 상태를 실패로 알리는 read-only 대기 workflow로 교체했다.
+- `tools.subscription_review`는 로컬 구독 인증·새 reviewer 세션·JSON Schema·최신 CI/SHA·clone 불변성을
+  검증한다. 인증 파일을 CI에 전달하지 않으며 유료 fallback은 없다.
+- 로컬 Python 검사 120 tests PASS. Windows read-only sandbox의 명령 읽기 실행 확인.
+- 실제 구독 리뷰 및 Actions 결과 전달은 아직 미검증이다. 전체 Phase 6 완료를 뜻하지 않는다.
+- PC 가동이 로컬 리뷰의 전제다. GitHub Actions CI는 PC 없이 실행된다.

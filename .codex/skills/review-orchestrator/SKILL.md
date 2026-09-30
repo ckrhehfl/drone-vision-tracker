@@ -10,12 +10,12 @@ description: 실제 base/head diff를 분석해 독립 읽기 전용 리뷰 범�
 `python -m tools.review plan --base <40자리 SHA> --head <40자리 SHA> --output <임시 plan.json>`으로 범위를 확인한다.
 Small(≤10파일 AND ≤400lines)은 전체 reviewer 1명, Medium(≤20 AND ≤1000)은 영역별,
 Large는 실제 subsystem별로 새 독립 reviewer 세션에 배정한다. 줄 수보다 논리 경계를 우선한다.
-이미 CI matrix가 scope를 배정했다면 그 범위를 전부 검토하고 재분할/추가 API 호출을 하지 않는다.
+이미 orchestrator가 scope를 배정했다면 그 범위를 전부 검토하고 재분할/추가 AI 호출을 하지 않는다.
 각 reviewer는 관련 주변 코드·호출자·테스트를 읽고 영역 사이 문제도 보고한다.
 실제 diff는 merge-base부터 head까지 확인하고 base/head 둘 다 기록한다.
 Vision에는 [review-vision](../review-vision/SKILL.md), 제어에는 [review-control](../review-control/SKILL.md),
 테스트/설정/CI에는 [review-tests](../review-tests/SKILL.md)를 적용한다.
-승인된 CI 증거를 확인하되 Secret이 있는 리뷰 runner에서는 head 코드를 실행하지 않는다.
+승인된 CI 증거를 확인하되 구독 인증을 사용하는 로컬 리뷰에서는 head 코드를 실행하지 않는다.
 
 모든 finding은 severity, area, file, line, issue, reason, suggested_fix, validation을 포함한다.
 P0/P1/P2는 blocking, P3는 non-blocking이다. 근거 없는 가상 문제를 만들지 않는다.

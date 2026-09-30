@@ -182,6 +182,8 @@ AUTOMATION_SCHEMA = object_schema(
     {
         "schema_version": constant(1),
         "stage": constant("read_only_review_setup"),
+        "review_backend": constant("local_chatgpt_subscription"),
+        "paid_api_enabled": FALSE,
         "external_review_enabled": FALSE,
         "auto_fix_enabled": FALSE,
         "auto_merge_enabled": FALSE,
