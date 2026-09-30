@@ -137,6 +137,10 @@ PR #1에 별도로 기록돼 있다. PR #3은 검증 후 `b9913e6`으로 bootstr
 별도 수정 세션, 후보 변경 검사, 로컬 CI, feature branch publisher 준비 코드를 추가한다.
 `execute`는 활성화 설정 전에 프로세스·네트워크·시도 예약을 시작하지 않는다.
 [정확한 권한 범위와 미완료 사항](fixer-activation.md)을 따른다. 실제 자동 수정 0회다.
-GitHub Actions contents write, 새로운 Secret, main 보호 규칙, Auto Merge는 변경하지 않았다.
+GitHub Actions contents write, 새로운 Secret, Auto Merge는 변경하지 않았다.
 Windows 쓰기 sandbox의 일회용 파일 작성 시험은 PASS다. 기존 Windows sandbox 선택을
 명시해야 하며 전체 사용자 설정을 다시 로드하거나 sandbox를 우회하지 않는다.
+기존 관리자 권한으로 main 보호를 설정하고 API로 재확인했다. 관리자 포함 PR 필수,
+최신 `software-checks`/`codex-review` 필수(출처 GitHub Actions app 15368), force/delete 금지다.
+사람의 코드 승인 수는 0이며 소스 리뷰를 사용자에게 요구하지 않는다.
+Decision Gate check는 Phase 8 검증 후 추가한다. 현재 운영 Auto Merge는 꺼져 있다.

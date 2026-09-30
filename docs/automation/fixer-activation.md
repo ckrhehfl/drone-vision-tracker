@@ -24,8 +24,9 @@ Windows에서는 이 PC에 이미 설정된 `windows.sandbox="elevated"`를 명�
 parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행한다.
 새 GITHUB_TOKEN이나 PAT를 전달하지 않으므로 GITHUB_TOKEN push의 CI 억제를 이용하지 않는다.
 현재 로컬 인증은 관리자 계정이다. 코드의 main/force 금지만으로 branch 전용 credential과
-동등하다고 주장하지 않는다. 실제 활성화 전 main의 관리자 포함 PR 보호와 required checks,
-일반 feature push 후 CI 재실행을 확인해야 한다. 전용 credential이 필요하면 별도로 요청한다.
+동등하다고 주장하지 않는다. main의 관리자 포함 PR 보호와 `software-checks`/`codex-review`
+필수 검사는 기존 권한으로 설정·확인했다. 실제 활성화 전 일반 feature push 후 CI 재실행도
+확인해야 한다. 전용 credential이 필요하면 별도로 요청한다.
 
 ## 제한과 처리 순서
 
