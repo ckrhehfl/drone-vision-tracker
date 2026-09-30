@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -52,11 +53,20 @@ def current_context(repository, run_id):
         f"repos/{repository}/actions/workflows/ci.yml/runs"
         f"?event=pull_request&head_sha={head}&per_page=100"
     )
+    if latest["total_count"] != len(latest["workflow_runs"]):
+        raise ValueError("Incomplete CI execution history; cannot establish latest attempt")
+    # A lower run ID can be rerun after a newer ID. Read each latest attempt's timestamp.
+    latest["workflow_runs"] = [
+        api(
+            f"repos/{repository}/actions/runs/{int(item['id'])}/attempts/{int(item['run_attempt'])}"
+        )
+        for item in latest["workflow_runs"]
+    ]
     jobs = api(
         f"repos/{repository}/actions/runs/{int(run_id)}/attempts/{int(run['run_attempt'])}"
         "/jobs?per_page=100"
     )
-    validate_ci_evidence(run, latest, jobs)
+    newest = validate_ci_evidence(run, latest, jobs)
     candidates = api(f"repos/{repository}/commits/{head}/pulls?per_page=100")
     matches = [p for p in candidates if p["state"] == "open" and p["head"]["sha"] == head]
     if len(matches) != 1:
@@ -72,6 +82,7 @@ def current_context(repository, run_id):
         "pr": pr["number"],
         "ci_run_id": int(run_id),
         "ci_run_attempt": run["run_attempt"],
+        "ci_started_at": newest["run_started_at"],
         "ci_url": run["html_url"],
     }
 
@@ -81,7 +92,22 @@ def validate_ci_evidence(run, latest, jobs):
     candidates = [r for r in latest["workflow_runs"] if r["head_sha"] == run["head_sha"]]
     if not candidates:
         raise ValueError("No current CI execution exists")
-    newest = max(candidates, key=lambda item: item["id"])
+
+    def started_at(item):
+        try:
+            timestamp = datetime.fromisoformat(item["run_started_at"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Missing or invalid CI attempt start time") from exc
+        if timestamp.tzinfo is None:
+            raise ValueError("CI attempt start time must include timezone")
+        return timestamp
+
+    timestamps = [(started_at(item), item) for item in candidates]
+    newest_time = max(timestamp for timestamp, _ in timestamps)
+    newest_candidates = [item for timestamp, item in timestamps if timestamp == newest_time]
+    if len(newest_candidates) != 1:
+        raise ValueError("Ambiguous CI attempt order; cannot establish latest execution")
+    newest = newest_candidates[0]
     if (newest["id"], newest["run_attempt"]) != (run["id"], run["run_attempt"]):
         raise ValueError("A newer CI execution supersedes this result")
     if newest["status"] != "completed" or newest["conclusion"] != "success":
@@ -105,6 +131,7 @@ def validate_ci_evidence(run, latest, jobs):
         or checks[0]["conclusion"] != "success"
     ):
         raise ValueError("No successful software test step evidence")
+    return newest
 
 
 def fingerprint():

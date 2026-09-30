@@ -188,7 +188,8 @@ def ci_evidence(github_metadata):
     run.update(id=100, run_attempt=1, html_url="https://github.com/owner/project/actions/runs/100")
     pr.update(number=1, user={"login": "owner"})
     pr["base"]["sha"] = BASE
-    latest = {"workflow_runs": [copy.deepcopy(run)]}
+    run["run_started_at"] = "2026-09-30T01:00:00Z"
+    latest = {"total_count": 1, "workflow_runs": [copy.deepcopy(run)]}
     jobs = {
         "total_count": 1,
         "jobs": [
@@ -225,6 +226,7 @@ def test_old_success_is_rejected_after_new_run(ci_evidence, state):
         conclusion=None if state == "in_progress" else state,
     )
     latest["workflow_runs"].append(newer)
+    newer["run_started_at"] = "2026-09-30T01:01:00Z"
     with pytest.raises(ValueError, match="supersedes"):
         validate_ci_evidence(run, latest, jobs)
 
@@ -273,6 +275,7 @@ def test_context_rechecks_run_attempt_and_jobs_via_api(ci_evidence, monkeypatch)
     run, latest, jobs, pr = ci_evidence
     responses = {
         "repos/owner/project/actions/runs/100": run,
+        "repos/owner/project/actions/runs/100/attempts/1": run,
         (
             "repos/owner/project/actions/workflows/ci.yml/runs"
             f"?event=pull_request&head_sha={HEAD}&per_page=100"
@@ -288,6 +291,45 @@ def test_context_rechecks_run_attempt_and_jobs_via_api(ci_evidence, monkeypatch)
     jobs["jobs"][0]["steps"][0]["status"] = "in_progress"
     with pytest.raises(ValueError, match="step evidence"):
         current_context("owner/project", 100)
+
+
+@pytest.mark.parametrize("state", ["in_progress", "failure", "cancelled", "skipped", "success"])
+def test_later_rerun_of_lower_id_supersedes_higher_id(ci_evidence, state):
+    run, latest, jobs, _ = ci_evidence
+    run["id"] = 101
+    old_rerun = copy.deepcopy(run)
+    old_rerun.update(
+        id=100,
+        run_attempt=2,
+        run_started_at="2026-09-30T02:00:00Z",
+        status="in_progress" if state == "in_progress" else "completed",
+        conclusion=None if state == "in_progress" else state,
+    )
+    latest.update(total_count=2, workflow_runs=[copy.deepcopy(run), old_rerun])
+    with pytest.raises(ValueError, match="supersedes"):
+        validate_ci_evidence(run, latest, jobs)
+    if state == "success":
+        assert validate_ci_evidence(old_rerun, latest, jobs)["run_attempt"] == 2
+    else:
+        with pytest.raises(ValueError, match="not successful"):
+            validate_ci_evidence(old_rerun, latest, jobs)
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "2026-09-30T01:00:00"])
+def test_unordered_attempts_fail_closed(ci_evidence, timestamp):
+    run, latest, jobs, _ = ci_evidence
+    latest["workflow_runs"][0]["run_started_at"] = timestamp
+    with pytest.raises(ValueError):
+        validate_ci_evidence(run, latest, jobs)
+
+
+def test_same_timestamp_does_not_guess_attempt_order(ci_evidence):
+    run, latest, jobs, _ = ci_evidence
+    other = copy.deepcopy(run)
+    other["id"] = 99
+    latest["workflow_runs"].append(other)
+    with pytest.raises(ValueError, match="Ambiguous"):
+        validate_ci_evidence(run, latest, jobs)
 
 
 def test_large_review_keeps_related_automation_files_together():
