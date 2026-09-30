@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from tools import auto_fix
-from tools.fix_attempts import count_attempts, reserve_attempt
+from tools.fix_attempts import count_attempts, pr_lock, reserve_attempt
 
 
 def test_attempts_survive_new_head_and_new_process_connection(tmp_path):
@@ -34,6 +34,17 @@ def test_concurrent_reservations_cannot_exceed_two(tmp_path):
         results = list(pool.map(reserve, range(4)))
     assert sorted(item for item in results if isinstance(item, int)) == [1, 2]
     assert results.count("blocked") == 2
+
+
+def test_only_one_fixer_can_run_for_a_pr(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    with pr_lock(path, "repo", 8):
+        with pytest.raises(RuntimeError, match="already running"), pr_lock(path, "repo", 8):
+            pytest.fail("Second writer acquired the lock")
+        with pr_lock(path, "repo", 9):
+            pass
+    with pr_lock(path, "repo", 8):
+        pass
 
 
 def test_disabled_fixer_starts_no_network_process_or_ledger(monkeypatch, tmp_path):
@@ -115,6 +126,41 @@ def test_candidate_accepts_new_regression_tests_including_staged_ones(candidate)
     auto_fix.validate_changes(checkout, head)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def test_value():\n    if False:\n        assert 2 == 2\n",
+        "def value_not_collected():\n    assert 2 == 2\n",
+        "def test_value():\n    return\n    assert 2 == 2\n",
+    ],
+)
+def test_existing_test_execution_cannot_be_removed(candidate, source):
+    checkout, head, _ = candidate
+    (checkout / "tests/test_example.py").write_text(source)
+    with pytest.raises(ValueError, match="preserve existing tests"):
+        auto_fix.validate_changes(checkout, head, ["tests/test_example.py"])
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "AGENTS.md",
+        "docs/extra.md",
+        ".github/workflows/extra.yml",
+        "config/automation.json",
+        "unrelated.py",
+        "tests/conftest.py",
+    ],
+)
+def test_unrelated_files_cannot_be_published(candidate, name):
+    checkout, head, _ = candidate
+    path = checkout / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("unrelated = True\n")
+    with pytest.raises(ValueError, match="finding scope"):
+        auto_fix.validate_changes(checkout, head, ["finding.py"])
+
+
 def test_candidate_cannot_add_skip_or_change_history(candidate):
     checkout, head, git = candidate
     path = checkout / "tests/test_regression.py"
@@ -191,6 +237,7 @@ def test_execute_failure_never_pushes_and_consumes_attempt(monkeypatch, tmp_path
     monkeypatch.setattr(auto_fix, "preflight", lambda *a: None)
     monkeypatch.setattr(auto_fix, "ledger_path", lambda: ledger)
     monkeypatch.setattr(auto_fix, "git_state", lambda _: (b"unchanged",))
+    monkeypatch.setattr(auto_fix, "current_context", lambda *a: context)
     calls = []
 
     def command(args, **kwargs):
@@ -208,8 +255,8 @@ def test_execute_failure_never_pushes_and_consumes_attempt(monkeypatch, tmp_path
     assert not any("commit" in call or "push" in call for call in calls)
 
 
-@pytest.mark.parametrize("ci_fails", [False, True])
-def test_candidate_flow_requires_local_ci_before_feature_push(monkeypatch, tmp_path, ci_fails):
+@pytest.mark.parametrize("failure", ["none", "ci", "pre-commit", "pre-push"])
+def test_candidate_flow_requires_local_ci_before_feature_push(monkeypatch, tmp_path, failure):
     seed = tmp_path / "seed"
     seed.mkdir()
     real_run = subprocess.run
@@ -234,7 +281,9 @@ def test_candidate_flow_requires_local_ci_before_feature_push(monkeypatch, tmp_p
     ledger = tmp_path / "attempts.sqlite3"
     monkeypatch.setattr(auto_fix, "ROOT", operator)
     monkeypatch.setattr(
-        auto_fix, "prepare", lambda _: (context, {"blocking_findings": []}, "feature")
+        auto_fix,
+        "prepare",
+        lambda _: (context, {"blocking_findings": [{"file": "value.py"}]}, "feature"),
     )
     monkeypatch.setattr(auto_fix, "require_publishing_guards", lambda _: None)
     monkeypatch.setattr(auto_fix, "current_context", lambda *a: context)
@@ -243,6 +292,7 @@ def test_candidate_flow_requires_local_ci_before_feature_push(monkeypatch, tmp_p
     monkeypatch.setattr(auto_fix, "ledger_path", lambda: ledger)
     pushed = []
     ci_checked = []
+    parent_commits = []
 
     def run(args, **kwargs):
         if args[:2] == ["git", "clone"]:
@@ -252,27 +302,44 @@ def test_candidate_flow_requires_local_ci_before_feature_push(monkeypatch, tmp_p
             return result
         if "tools.ci" in args:
             ci_checked.append(True)
-            if ci_fails:
+            assert "sandbox" in args
+            assert any(item.endswith("network.enabled=false") for item in args)
+            if failure == "ci":
                 raise subprocess.CalledProcessError(1, args)
             return subprocess.CompletedProcess(args, 0)
-        if args[:2] == ["git", "push"]:
+        if args[0] == "git" and "commit" in args:
+            parent_commits.append(args)
+            assert any(item.startswith("core.hooksPath=") for item in args)
+        if args[0] == "git" and "push" in args:
             assert ci_checked
             pushed.append(args)
             return subprocess.CompletedProcess(args, 0)
         return real_run(args, **kwargs)
 
-    def fix(command, *args):
+    def fix(command, *args, **kwargs):
         from pathlib import Path
 
         checkout = Path(command[command.index("--cd") + 1])
+        if "sandbox" in command:
+            return run(command)
         (checkout / "value.py").write_text("VALUE = 2\n")
+        if failure in {"pre-commit", "pre-push"}:
+            marker = (tmp_path / "hook-executed").as_posix()
+            hook = checkout / ".git/hooks" / failure
+            hook.write_text(f'#!/bin/sh\necho ran > "{marker}"\n')
+            hook.chmod(0o755)
 
     monkeypatch.setattr(auto_fix.subprocess, "run", run)
     monkeypatch.setattr(auto_fix, "run_scope", fix)
-    if ci_fails:
+    if failure == "ci":
         with pytest.raises(subprocess.CalledProcessError):
             auto_fix.execute(tmp_path)
         assert not pushed
+    elif failure in {"pre-commit", "pre-push"}:
+        with pytest.raises(ValueError, match="Git configuration"):
+            auto_fix.execute(tmp_path)
+        assert not pushed and not parent_commits and not ci_checked
+        assert not (tmp_path / "hook-executed").exists()
     else:
         result = auto_fix.execute(tmp_path)
         assert result["status"] == "CI_AND_INDEPENDENT_REVIEW_REQUIRED"

@@ -1,11 +1,43 @@
 """Persistent, atomic PR-level attempt reservations. Never reset on a new commit."""
 
+import hashlib
 import os
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 MAX_AUTO_FIX_ATTEMPTS = 2
+
+
+@contextmanager
+def pr_lock(path, repository, pr):
+    """Hold one fixer per PR; the OS releases the lock after a process crash."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(repository.encode()).hexdigest()[:16]
+    with (path.parent / f"{name}-pr-{pr}.lock").open("a+b") as stream:
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError("Another automatic fixer is already running for this PR") from exc
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def ledger_path():

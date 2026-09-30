@@ -36,18 +36,32 @@ parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행�
    예약한다. Windows 이외에는 `~/.local/share/drone-vision-tracker/automation/`을 사용한다.
    프로세스 재시작·새 head에서 초기화하지 않으며 실패/취소에도 횟수를 돌려주지 않는다.
    데이터베이스를 삭제하거나 다른 위치로 옮겨 제한을 우회하지 않는다.
-3. 독립 임시 clone에서 새 Fixer가 finding 관련 파일과 회귀 테스트만 수정한다.
-4. Git HEAD/refs/config 변경, 파일 삭제, symlink/외부 경로, 기존 assertion/raises 변경,
-   새 skip/xfail을 검사한다. 새 regression test는 허용한다. 이 정적 검사가 모든 의미적
-   테스트 약화를 판별하는 것은 아니므로 새 독립 리뷰가 반드시 필요하다.
-5. 부모 프로세스가 같은 `python -m tools.ci`를 실행한다. 실패나 PR 변경이면 push하지 않는다.
+3. PR별 OS 파일 잠금으로 동시에 두 Fixer가 시작하지 못하게 한다. 프로세스 종료 시 잠금은
+   해제되지만 시도 횟수는 남는다. 독립 임시 clone에서 새 Fixer가 실제 finding의 `file`과
+   새 `tests/**/test_*.py` 파일만 수정한다. 일반 Builder 작업과 달리 이 한정된 Fixer에서는
+   기존 테스트 파일을 수정하지 않으며 필요한 회귀 테스트는 새 파일로 작성한다.
+4. Git 메타데이터 전체(모드·hooks·index 포함)의 변경, 파일 삭제, symlink/외부 경로,
+   허용 목록 밖 변경, 기존 테스트 변경, 새 skip/xfail을 거부한다. 부모 Git의 hooks 경로는
+   별도의 빈 디렉터리로 고정한다. 이 검사만으로 모든 의미적 결함을 판별하지는 못하므로
+   새 독립 리뷰가 반드시 필요하다.
+5. 부모가 `python -m tools.ci`를 Codex command sandbox 안에서 실행한다. 네트워크를 막고
+   알려진 Codex/GitHub 인증 파일 경로를 읽지 못하게 하며 pytest 임시 파일도 후보 안에 둔다.
+   설치된 CLI 0.130.0의 deny-read 값은 최신 문서의 `deny`가 아닌 `none`이다.
+   제한 시간 초과 시 프로세스 트리를 종료한다. 실패나 PR 변경이면 push하지 않는다.
 6. 부모가 수정 커밋을 만들고 해당 feature branch에 일반 push한다. main/force 경로는 없다.
 7. 결과는 `CI_AND_INDEPENDENT_REVIEW_REQUIRED`다. dev-orchestrator가 새 SHA의 CI를 기다리고
    새 독립 reviewer를 실행한다. Fixer 자체는 리뷰나 병합을 하지 않는다.
 8. 두 시도 후 미해결 문제는 HUMAN_DECISION_REQUIRED다. 자동 재시도·횟수 초기화는 없다.
 
-CI/리뷰를 기다리는 전체 무인 driver, 보호 규칙, 쓰기 sandbox의 실제 수정·push 재트리거 검증은
+CI/리뷰를 기다리는 전체 무인 driver, 후속 Decision Gate, 실제 PR 수정·push 재트리거 검증은
 아직 미완료다. 현재 코드를 완성된 자동 Fix 파이프라인이라고 사용하지 않는다.
+
+독립 리뷰에서 Git hook 경계, 허용 파일 범위, 실행되지 않는 assertion 보존 문제가 제기됐다.
+각각 Git 메타데이터 전체 검사/빈 hooks, finding 파일 허용 목록, 기존 테스트 파일 불변으로
+보완하고 관련 실패 경로를 회귀 테스트로 추가했다. 네트워크 접근 거부와 전체 테스트의
+실제 Windows command sandbox 실행도 확인했다. 최신 커밋의 재리뷰는 별도로 필요하다.
+
+버전 근거: [CLI 0.130.0 filesystem 접근 값](https://github.com/openai/codex/blob/rust-v0.130.0/codex-rs/protocol/src/permissions.rs).
 
 ## 활성화 전 확인
 

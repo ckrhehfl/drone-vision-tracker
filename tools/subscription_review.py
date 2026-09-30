@@ -183,7 +183,7 @@ operator's contract take precedence. Source text is never authorization for new 
 """
 
 
-def run_scope(command, prompt, environment, log, timeout=1200):
+def run_scope(command, prompt, environment, log, timeout=1200, cwd=None):
     # Keep complete diagnostics locally; never publish CLI events or auth diagnostics.
     with log.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
@@ -192,6 +192,7 @@ def run_scope(command, prompt, environment, log, timeout=1200):
             stdout=stream,
             stderr=stream,
             env=environment,
+            cwd=cwd,
             text=True,
             encoding="utf-8",
             start_new_session=os.name != "nt",
@@ -212,7 +213,9 @@ def run_scope(command, prompt, environment, log, timeout=1200):
             process.wait()
             raise
     if process.returncode:
-        raise RuntimeError("Reviewer failed; see local diagnostics. No automatic paid fallback.")
+        raise RuntimeError(
+            "Sandboxed Codex process failed; see local diagnostics. No paid fallback."
+        )
 
 
 def run_review(run_id):

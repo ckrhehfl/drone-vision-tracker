@@ -144,3 +144,7 @@ Windows 쓰기 sandbox의 일회용 파일 작성 시험은 PASS다. 기존 Wind
 최신 `software-checks`/`codex-review` 필수(출처 GitHub Actions app 15368), force/delete 금지다.
 사람의 코드 승인 수는 0이며 소스 리뷰를 사용자에게 요구하지 않는다.
 Decision Gate check는 Phase 8 검증 후 추가한다. 현재 운영 Auto Merge는 꺼져 있다.
+준비 코드의 첫 유효 독립 리뷰에서 blocking 3개(Git hook 권한 경계, finding 파일 범위,
+실행되지 않는 assertion)가 확인됐다. Builder가 해당 경계와 회귀 테스트를 보완한다.
+전체 167개 테스트의 Windows command sandbox 실행과 외부 연결 거부를 실제 확인했다.
+이 검사는 실제 PR 자동 수정·push 재트리거 또는 최신 SHA 리뷰 PASS를 대신하지 않는다.

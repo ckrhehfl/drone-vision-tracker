@@ -73,6 +73,30 @@ def test_untested_cli_version_fails_before_login(monkeypatch):
         review.preflight("codex", {})
 
 
+def test_timeout_terminates_process_tree_and_preserves_failure(monkeypatch, tmp_path):
+    events = []
+
+    class Process:
+        pid = 123456789
+
+        def communicate(self, prompt, timeout):
+            raise subprocess.TimeoutExpired("mock", timeout)
+
+        def wait(self):
+            events.append("waited")
+
+    monkeypatch.setattr(review.subprocess, "Popen", lambda *a, **k: Process())
+    monkeypatch.setattr(review.subprocess, "run", lambda args, **k: events.append(args))
+    monkeypatch.setattr(review.os, "killpg", lambda *args: events.append(args), raising=False)
+    with pytest.raises(subprocess.TimeoutExpired):
+        review.run_scope(["mock"], "", {}, tmp_path / "log.txt", timeout=1)
+    assert events[-1] == "waited"
+    if review.os.name == "nt":
+        assert events[0] == ["taskkill", "/PID", "123456789", "/T", "/F"]
+    else:
+        assert events[0][0] == 123456789
+
+
 def test_public_ci_refuses_account_auth_before_starting_process(monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setattr(review.subprocess, "run", lambda *a, **k: pytest.fail("Started process"))
