@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "stage": "read_only_review_setup",
+  "external_review_enabled": false,
+  "auto_fix_enabled": false,
+  "auto_merge_enabled": false,
+  "max_auto_fix_attempts": 2
+}

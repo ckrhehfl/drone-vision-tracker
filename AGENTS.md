@@ -14,7 +14,7 @@
 - 모의 입력·MockTransport를 우선 사용한다. 자동으로 Serial 포트를 열어 ARM하거나 모터를 움직이지 않는다.
 - hardware_enabled 기본값은 false. calibration.completed=true만으로 충분하지 않으며 축 필드의 유효성·프로토콜·운영자 확인까지 검사한다.
 - 대형 영상·이미지·가중치·실행 로그·비밀키를 Git에 추가하지 않는다. .gitignore가 이미 추적 중인 비밀을 제거한다고 가정하지 않는다.
-- 현재 문서 검사는 `python tools/check_design_package.py`다. 이 검사 통과는 비전·통신·모터 기능 통과가 아니다.
+- 공통 로컬/CI 검사는 `python -m tools.ci`다. 기존 문서 검사 `python tools/check_design_package.py`도 유지한다. 검사 통과는 비전·통신·모터 기능 통과가 아니다.
 - 구현을 추가하면 그 변경에 맞는 테스트와 실행 방법을 함께 만든다. 테스트 수·실행 명령·결과·미실행 사유를 사실대로 보고한다.
 
 ## Code Review Rules
@@ -30,4 +30,12 @@
 ## Finish
 - 변경 요약 / 테스트 결과 / 미실행 시험 / 남은 위험 / 다음 한 작업을 보고한다.
 - 구현과 문서·예제 설정이 달라지면 함께 갱신한다.
-- 자동 병합·무제한 재시도·사용자 변경 되돌리기·강제 push는 하지 않는다.
+- 무제한 재시도·사용자 변경 되돌리기·강제 push는 하지 않는다. 자동 병합은 아래 단계별 검증이 끝난 후에만 허용한다.
+
+## Automation — 2026-09-30 사용자 요청
+- [운영 규칙](docs/automation/operating-policy.md)과 [현재 단계](docs/automation/setup-status.md)를 따른다. 일반 기술 선택은 에이전트가 결정한다.
+- `.codex/skills/`가 Skill 원본이며 `.agents/skills/`는 탐색용 진입점이다.
+- Builder / 읽기 전용 Reviewer / Fixer / Decision Gate를 분리한다. reviewer는 새 독립 세션에서 실제 diff·테스트를 검토한다.
+- 최대 자동 수정은 PR당 2회. 수정마다 새 SHA의 CI와 독립 리뷰가 필요하다.
+- Phase 6 검증 전 Fixer 활성화 금지, Phase 9 검증 전 Auto Merge 금지. main 직접 push 금지.
+- 비용·Secret·권한·범위·실물 등 운영 규칙의 gate에서만 정해진 HUMAN_* 형식으로 요청한다.

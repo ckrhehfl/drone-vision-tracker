@@ -1,6 +1,9 @@
 """Check documentation-package integrity only; never access hardware or network."""
+
 from __future__ import annotations
+
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -8,15 +11,36 @@ from urllib.parse import unquote
 from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
+LOCAL_DIRECTORIES = {".git", ".venv", "venv", "artifacts", ".pytest_cache", ".ruff_cache"}
 REQUIRED = (
-    "README.md", "AGENTS.md", "docs/01_system_design.md",
-    "docs/02_serial_protocol.md", "docs/03_dataset_and_evaluation.md",
-    "docs/04_implementation_plan.md", "docs/05_decisions.md",
-    "docs/06_sources.md", "docs/AI_드론_비전_추적_설계서_v1.0.docx",
-    "config/project.example.json", "config/calibration.example.json",
-    "prompts/implementation.md", "prompts/review.md", "prompts/handoff.md",
-    ".gitignore", ".github/pull_request_template.md",
+    "README.md",
+    "AGENTS.md",
+    "docs/01_system_design.md",
+    "docs/02_serial_protocol.md",
+    "docs/03_dataset_and_evaluation.md",
+    "docs/04_implementation_plan.md",
+    "docs/05_decisions.md",
+    "docs/06_sources.md",
+    "docs/AI_드론_비전_추적_설계서_v1.0.docx",
+    "config/project.example.json",
+    "config/calibration.example.json",
+    "prompts/implementation.md",
+    "prompts/review.md",
+    "prompts/handoff.md",
+    ".gitignore",
+    ".github/pull_request_template.md",
 )
+
+
+def markdown_files(root: Path):
+    """Only inspect project documents, not installed tools or generated artifacts."""
+    for directory, children, files in os.walk(root):
+        if Path(directory) == root:
+            children[:] = [name for name in children if name not in LOCAL_DIRECTORIES]
+        for name in files:
+            if name.endswith(".md"):
+                yield Path(directory) / name
+
 
 def main() -> int:
     errors: list[str] = []
@@ -24,7 +48,7 @@ def main() -> int:
         path = ROOT / name
         if not path.is_file() or path.stat().st_size == 0:
             errors.append(f"Missing/empty: {name}")
-    for path in ROOT.rglob("*.md"):
+    for path in markdown_files(ROOT):
         text = path.read_text(encoding="utf-8")
         if "" in text or "" in text:
             errors.append(f"Unresolved chat citation: {path.relative_to(ROOT)}")
@@ -42,7 +66,8 @@ def main() -> int:
             "serial stays disabled": cfg["serial"]["enabled"] is False,
             "explicit ARM required": cfg["serial"]["require_explicit_arm"] is True,
             "no prediction-only motion": cfg["tracking"]["move_on_predicted_only"] is False,
-            "no automatic laser output": cfg["optional_indicator"]["automatic_laser_output"] is False,
+            "no automatic laser output": cfg["optional_indicator"]["automatic_laser_output"]
+            is False,
             "calibration not fabricated": cal["completed"] is False,
             "latest-frame queue": cfg["input"]["max_queued_frames"] == 1,
         }
@@ -67,6 +92,7 @@ def main() -> int:
     print("PASS: required files, Markdown links, example defaults and DOCX container.")
     print("NOT TESTED: application, AI accuracy, firmware, Serial, physical motors, agent setup.")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

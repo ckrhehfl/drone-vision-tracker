@@ -16,7 +16,8 @@ htmlcov/
 *.pem
 *.key
 config/local/
-.codex/
+.codex/*
+!.codex/skills/
 .codex-log/
 
 # Raw media / model artifacts / runs
@@ -42,3 +43,4 @@ Thumbs.db
 ~$*.docx
 .vscode/
 .idea/
+artifacts/
