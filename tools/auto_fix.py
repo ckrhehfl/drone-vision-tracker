@@ -153,9 +153,7 @@ def execute(directory):
     # No network, ledger reservation or child process happens before the activation gate.
     settings = strict_json((ROOT / "config/automation.json").read_text(encoding="utf-8"))
     if not settings["auto_fix_enabled"]:
-        raise ValueError(
-            "Automatic fixer is not activated; complete the staged verification first"
-        )
+        raise ValueError("Automatic fixer is not activated; complete the staged verification first")
     context, report, branch = prepare(directory)
     require_publishing_guards(context)
     executable = shutil.which("codex")
