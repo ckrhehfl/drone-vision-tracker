@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -153,6 +154,31 @@ def run_local_ci(executable, checkout, environment, log):
         timeout=600,
         cwd=checkout,
     )
+
+
+def write_push_guard(hooks, branch, expected_head, new_head):
+    """Check the server-advertised old ref; receive-pack then compares it atomically."""
+    if branch == "main":
+        raise ValueError("Cannot publish an automatic fix to main")
+    expected_head = require_sha(expected_head)
+    new_head = require_sha(new_head)
+    # This trusted hook lives outside the child workspace. No PR code is executed.
+    hook = hooks / "pre-push"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "count=0\n"
+        "while read -r local_ref local_oid remote_ref remote_oid extra; do\n"
+        "  count=$((count + 1))\n"
+        f'  test "$remote_ref" = {shlex.quote("refs/heads/" + branch)} || exit 1\n'
+        f'  test "$remote_oid" = {shlex.quote(expected_head)} || exit 1\n'
+        f'  test "$local_oid" = {shlex.quote(new_head)} || exit 1\n'
+        '  test -z "$extra" || exit 1\n'
+        "done\n"
+        'test "$count" = 1\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    hook.chmod(0o755)
 
 
 def validate_changes(checkout, head, finding_files=()):
@@ -327,8 +353,10 @@ the candidate. Report the files changed and any unresolved finding; do not decla
         new_head = require_sha(
             subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout).decode().strip()
         )
+        write_push_guard(hooks, branch, context["head"], new_head)
         # Parent publisher uses existing local Git authentication, never GITHUB_TOKEN.
-        # Normal push cannot overwrite a remotely advanced branch. No main or force path exists.
+        # The trusted hook also rejects a rewound/deleted remote ref. A change after
+        # advertisement is rejected by the server's old-OID comparison. No force push.
         subprocess.run(
             [
                 "git",

@@ -148,3 +148,6 @@ Decision Gate check는 Phase 8 검증 후 추가한다. 현재 운영 Auto Merge
 실행되지 않는 assertion)가 확인됐다. Builder가 해당 경계와 회귀 테스트를 보완한다.
 전체 167개 테스트의 Windows command sandbox 실행과 외부 연결 거부를 실제 확인했다.
 이 검사는 실제 PR 자동 수정·push 재트리거 또는 최신 SHA 리뷰 PASS를 대신하지 않는다.
+재리뷰의 원격 branch rewind 경계 finding은 부모가 생성한 pre-push SHA 검사로 보완한다.
+실제 로컬 bare remote 시험에서 rewind/삭제/다른 branch 거부와 정확한 이전 SHA 갱신을 확인한다.
+force push 또는 force-with-lease는 사용하지 않는다.

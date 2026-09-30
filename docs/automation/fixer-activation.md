@@ -42,13 +42,16 @@ parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행�
    기존 테스트 파일을 수정하지 않으며 필요한 회귀 테스트는 새 파일로 작성한다.
 4. Git 메타데이터 전체(모드·hooks·index 포함)의 변경, 파일 삭제, symlink/외부 경로,
    허용 목록 밖 변경, 기존 테스트 변경, 새 skip/xfail을 거부한다. 부모 Git의 hooks 경로는
-   별도의 빈 디렉터리로 고정한다. 이 검사만으로 모든 의미적 결함을 판별하지는 못하므로
+   별도 디렉터리로 고정한다. commit 시 비어 있으며 push 전에 부모의 SHA 검증 hook만 둔다.
+   이 검사만으로 모든 의미적 결함을 판별하지는 못하므로
    새 독립 리뷰가 반드시 필요하다.
 5. 부모가 `python -m tools.ci`를 Codex command sandbox 안에서 실행한다. 네트워크를 막고
    알려진 Codex/GitHub 인증 파일 경로를 읽지 못하게 하며 pytest 임시 파일도 후보 안에 둔다.
    설치된 CLI 0.130.0의 deny-read 값은 최신 문서의 `deny`가 아닌 `none`이다.
    제한 시간 초과 시 프로세스 트리를 종료한다. 실패나 PR 변경이면 push하지 않는다.
 6. 부모가 수정 커밋을 만들고 해당 feature branch에 일반 push한다. main/force 경로는 없다.
+   신뢰된 pre-push hook이 서버가 알린 remote old SHA를 reviewed head와 비교한다.
+   브랜치 rewind/삭제도 거부하고, 광고 이후 변경은 Git 서버의 old OID 비교에서 거부한다.
 7. 결과는 `CI_AND_INDEPENDENT_REVIEW_REQUIRED`다. dev-orchestrator가 새 SHA의 CI를 기다리고
    새 독립 reviewer를 실행한다. Fixer 자체는 리뷰나 병합을 하지 않는다.
 8. 두 시도 후 미해결 문제는 HUMAN_DECISION_REQUIRED다. 자동 재시도·횟수 초기화는 없다.
