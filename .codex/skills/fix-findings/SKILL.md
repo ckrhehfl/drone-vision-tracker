@@ -16,3 +16,15 @@ MAX_AUTO_FIX_ATTEMPTS=2. 수정 커밋을 만들기 전에 횟수를 소비하�
 main 쓰기·force push·이전 PASS 재사용을 금지한다.
 2회 후에도 blocking finding이 있으면 HUMAN_DECISION_REQUIRED로 중단한다.
 횟수 기록 저장소·branch 전용 credential·재트리거 방식을 구축하기 전에는 자동 Fix가 완성되었다고 쓰지 않는다.
+
+현재 구현은 [Fixer 준비안](../../../docs/automation/fixer-activation.md)을 따른다.
+`python -m tools.auto_fix prepare --directory <검증된-review-디렉터리>`로 최신 finding을 확인한다.
+`execute`는 `auto_fix_enabled=false`이면 AI·네트워크·횟수 예약 전에 거부한다.
+수정 AI와 Git publisher를 분리한다. AI는 network 없는 임시 checkout에서 파일만 수정한다.
+publisher의 branch 쓰기 방식과 main 보호를 승인·검증하기 전에는 활성화하지 않는다.
+한정된 실행기는 finding의 정확한 file 및 새로운 `tests/**/test_*.py`만 허용한다.
+기존 테스트·Git 메타데이터·범위 밖 파일을 바꾸지 않는다. 새 회귀 테스트 파일을 작성한다.
+PR별 잠금, 영구 시도 예약, network 차단 로컬 CI 및 새로운 독립 리뷰를 우회하지 않는다.
+실행 결과 `CI_AND_INDEPENDENT_REVIEW_REQUIRED`는 완료/PASS가 아니다.
+새 SHA의 CI 완료 후 `tools.subscription_review`를 새로 실행하고 `tools.publish_review`로 게시한다.
+CI 실패는 그대로 기록하고 원인을 해결한다. 기존 review PASS나 수정 전 SHA를 재사용하지 않는다.

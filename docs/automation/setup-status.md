@@ -1,6 +1,9 @@
 # 자동 개발 시스템 구축 상태
 
-기준일: 2026-09-30. 이번 작업은 자동화 기반 구축이며 드론 기능 구현이 아니다.
+갱신일: 2026-10-01. 이번 작업은 자동화 기반 구축이며 드론 기능 구현이 아니다.
+
+현재: Phase 6까지 실제 검증 완료. Phase 7은 비활성 Fixer 준비 코드/테스트 작성 중이다.
+자동 Fix/Decision Gate/Auto Merge의 전체 무인 운용은 아직 활성화하지 않았다.
 
 ## Phase 1 감사
 
@@ -43,7 +46,7 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 
 ## 현재 경계
 
-유료 API, 무인 리뷰 연결, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰 검증을 준비했다.
+유료 API, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰와 Actions 결과 게시를 검증했다.
 기존 ChatGPT 구독 사용은 사용자 선택이며 새 비용·Secret·권한 승인을 추정하지 않는다.
 기존 문서의 수동 병합 원칙은 이번 사용자 요청에 따라 **9단계 검증 완료 후에만**
 조건부 자동 병합으로 확장한다. 하드웨어와 MVP 요구사항은 바뀌지 않는다.
@@ -104,3 +107,47 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 - 모든 JSON과 증거를 기본 브랜치 코드로 검증한다. 소유자의 main dispatch만 허용하며,
   CLI 진단 로그·구독 인증 파일·head 코드 실행은 전달하지 않는다.
 - 작은 PR을 이용한 실제 Actions 전달/성공/실패/새 SHA 검증 후 Phase 6 완료를 기록한다.
+
+## Phase 6 실제 검증 완료 — 2026-10-01
+
+결과 게시 [PR #2](https://github.com/ckrhehfl/drone-vision-tracker/pull/2)는 CI 134 tests,
+독립 2개 scope PASS/blocking 0 확인 후 `35e23af`로 통합했다. 승인 내용이 reviewer에
+누락된 것과 잘못된 문서 행 지적은 실제 사용자 승인/파일을 제공한 독립 재검토에서 해소했다.
+이 과정에서 이미 허용한 statuses 권한을 사용자에게 다시 요청하지 않았다.
+
+작은 문서 [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)로 다음을 확인했다.
+
+| 시험 | SHA / Actions run | 결과 |
+|---|---|---|
+| 최초 CI | `e5c27e6` / [36746109069](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746109069) | 134 tests PASS |
+| 실제 구독 리뷰 게시 | `e5c27e6` / [36746369366](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746369366) | PASS, blocker 0, 전체 artifact 원본 일치 |
+| 합성 실패 fixture | `e5c27e6` / [36746512500](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746512500) | CHANGES_REQUESTED, blocker 1, 실패 status, 전체 finding 보존 |
+| 새 head에 이전 JSON 제출 | `ac5c31c` / [36746720558](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746720558) | 검증 실패, 게시 skip, 새 head status 없음 |
+| 최신 CI | `ac5c31c` / [36746672087](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746672087) | 134 tests PASS |
+| 새 독립 리뷰 게시 | `ac5c31c` / [36747003424](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36747003424) | PASS, blocker 0, 전체 artifact 원본 일치 |
+
+`ac5c31cd985e334f934ca4684520c1b71192dc4b`의 실제 리뷰는 새 세션이며 clone 불변성 증거를
+검증했다. 합성 실패 finding은 AI가 찾은 제품 결함이 아니다. 실제 AI finding/수정/재리뷰는
+PR #1에 별도로 기록돼 있다. PR #3은 검증 후 `b9913e6`으로 bootstrap 통합했다.
+이 통합은 운영 자동 병합을 활성화한 것이 아니다. 실물 시험은 모두 미실행이다.
+
+## Phase 7 준비 — 비활성
+
+`tools.auto_fix`와 `tools.fix_attempts`에 최신 finding 검사, PR별 영구 최대 2회 예약,
+별도 수정 세션, 후보 변경 검사, 로컬 CI, feature branch publisher 준비 코드를 추가한다.
+`execute`는 활성화 설정 전에 프로세스·네트워크·시도 예약을 시작하지 않는다.
+[정확한 권한 범위와 미완료 사항](fixer-activation.md)을 따른다. 실제 자동 수정 0회다.
+GitHub Actions contents write, 새로운 Secret, Auto Merge는 변경하지 않았다.
+Windows 쓰기 sandbox의 일회용 파일 작성 시험은 PASS다. 기존 Windows sandbox 선택을
+명시해야 하며 전체 사용자 설정을 다시 로드하거나 sandbox를 우회하지 않는다.
+기존 관리자 권한으로 main 보호를 설정하고 API로 재확인했다. 관리자 포함 PR 필수,
+최신 `software-checks`/`codex-review` 필수(출처 GitHub Actions app 15368), force/delete 금지다.
+사람의 코드 승인 수는 0이며 소스 리뷰를 사용자에게 요구하지 않는다.
+Decision Gate check는 Phase 8 검증 후 추가한다. 현재 운영 Auto Merge는 꺼져 있다.
+준비 코드의 첫 유효 독립 리뷰에서 blocking 3개(Git hook 권한 경계, finding 파일 범위,
+실행되지 않는 assertion)가 확인됐다. Builder가 해당 경계와 회귀 테스트를 보완한다.
+전체 167개 테스트의 Windows command sandbox 실행과 외부 연결 거부를 실제 확인했다.
+이 검사는 실제 PR 자동 수정·push 재트리거 또는 최신 SHA 리뷰 PASS를 대신하지 않는다.
+재리뷰의 원격 branch rewind 경계 finding은 부모가 생성한 pre-push SHA 검사로 보완한다.
+실제 로컬 bare remote 시험에서 rewind/삭제/다른 branch 거부와 정확한 이전 SHA 갱신을 확인한다.
+force push 또는 force-with-lease는 사용하지 않는다.
