@@ -100,13 +100,16 @@ GitHub 기본 `@codex review`는 별도 공식 구독 연동이다. 해당 연�
 OpenAI 공식 문서는 ChatGPT auth.json을 CI로 옮기는 인증 절차를 공개 저장소에 사용하지 말라고
 명시한다. 여기서는 GitHub self-hosted runner도 설치하지 않는다.
 
-## 단계 6 검증 계획 (아직 실행하지 않음)
+## 단계 6 검증 (2026-10-01 완료)
 
 기반 PR에서 로컬 구독 리뷰를 먼저 확인하고 bootstrap 통합 후 작은 모의 테스트 PR을 만든다.
 구독 리뷰의 JSON·상태·파일 불변성을 확인하고 Actions 결과 전달을 별도로 검증한다.
 의도된 작은 결함 또는 schema fixture로 CHANGES_REQUESTED 판정도 확인한다.
 새 head로 갱신해 이전 리뷰가 무효가 되고 새 CI/독립 리뷰가 필요한지 확인한다.
 실행당 head/base/run ID와 인증 방식·미검증 항목을 남긴다. 이를 통과한 뒤 Phase 7로 진행한다.
+
+실제 PASS/합성 실패/이전 SHA 거부/새 SHA 재리뷰 증거는 [구축 상태](setup-status.md)에 기록했다.
+Phase 7 준비 도구와 아직 승인·검증이 필요한 사항은 [Fixer 준비안](fixer-activation.md)을 따른다.
 
 ## 공식 근거
 

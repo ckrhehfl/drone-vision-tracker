@@ -43,6 +43,8 @@ def test_tools_import_without_network_or_hardware(monkeypatch):
         "review_summary",
         "subscription_review",
         "publish_review",
+        "auto_fix",
+        "fix_attempts",
     ):
         importlib.reload(importlib.import_module(f"tools.{name}"))
 

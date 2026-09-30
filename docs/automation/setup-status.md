@@ -1,6 +1,9 @@
 # 자동 개발 시스템 구축 상태
 
-기준일: 2026-09-30. 이번 작업은 자동화 기반 구축이며 드론 기능 구현이 아니다.
+갱신일: 2026-10-01. 이번 작업은 자동화 기반 구축이며 드론 기능 구현이 아니다.
+
+현재: Phase 6까지 실제 검증 완료. Phase 7은 비활성 Fixer 준비 코드/테스트 작성 중이다.
+자동 Fix/Decision Gate/Auto Merge의 전체 무인 운용은 아직 활성화하지 않았다.
 
 ## Phase 1 감사
 
@@ -43,7 +46,7 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 
 ## 현재 경계
 
-유료 API, 무인 리뷰 연결, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰 검증을 준비했다.
+유료 API, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰와 Actions 결과 게시를 검증했다.
 기존 ChatGPT 구독 사용은 사용자 선택이며 새 비용·Secret·권한 승인을 추정하지 않는다.
 기존 문서의 수동 병합 원칙은 이번 사용자 요청에 따라 **9단계 검증 완료 후에만**
 조건부 자동 병합으로 확장한다. 하드웨어와 MVP 요구사항은 바뀌지 않는다.
@@ -104,3 +107,34 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 - 모든 JSON과 증거를 기본 브랜치 코드로 검증한다. 소유자의 main dispatch만 허용하며,
   CLI 진단 로그·구독 인증 파일·head 코드 실행은 전달하지 않는다.
 - 작은 PR을 이용한 실제 Actions 전달/성공/실패/새 SHA 검증 후 Phase 6 완료를 기록한다.
+
+## Phase 6 실제 검증 완료 — 2026-10-01
+
+결과 게시 [PR #2](https://github.com/ckrhehfl/drone-vision-tracker/pull/2)는 CI 134 tests,
+독립 2개 scope PASS/blocking 0 확인 후 `35e23af`로 통합했다. 승인 내용이 reviewer에
+누락된 것과 잘못된 문서 행 지적은 실제 사용자 승인/파일을 제공한 독립 재검토에서 해소했다.
+이 과정에서 이미 허용한 statuses 권한을 사용자에게 다시 요청하지 않았다.
+
+작은 문서 [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)로 다음을 확인했다.
+
+| 시험 | SHA / Actions run | 결과 |
+|---|---|---|
+| 최초 CI | `e5c27e6` / [36746109069](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746109069) | 134 tests PASS |
+| 실제 구독 리뷰 게시 | `e5c27e6` / [36746369366](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746369366) | PASS, blocker 0, 전체 artifact 원본 일치 |
+| 합성 실패 fixture | `e5c27e6` / [36746512500](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746512500) | CHANGES_REQUESTED, blocker 1, 실패 status, 전체 finding 보존 |
+| 새 head에 이전 JSON 제출 | `ac5c31c` / [36746720558](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746720558) | 검증 실패, 게시 skip, 새 head status 없음 |
+| 최신 CI | `ac5c31c` / [36746672087](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746672087) | 134 tests PASS |
+| 새 독립 리뷰 게시 | `ac5c31c` / [36747003424](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36747003424) | PASS, blocker 0, 전체 artifact 원본 일치 |
+
+`ac5c31cd985e334f934ca4684520c1b71192dc4b`의 실제 리뷰는 새 세션이며 clone 불변성 증거를
+검증했다. 합성 실패 finding은 AI가 찾은 제품 결함이 아니다. 실제 AI finding/수정/재리뷰는
+PR #1에 별도로 기록돼 있다. PR #3은 검증 후 `b9913e6`으로 bootstrap 통합했다.
+이 통합은 운영 자동 병합을 활성화한 것이 아니다. 실물 시험은 모두 미실행이다.
+
+## Phase 7 준비 — 비활성
+
+`tools.auto_fix`와 `tools.fix_attempts`에 최신 finding 검사, PR별 영구 최대 2회 예약,
+별도 수정 세션, 후보 변경 검사, 로컬 CI, feature branch publisher 준비 코드를 추가한다.
+`execute`는 활성화 설정 전에 프로세스·네트워크·시도 예약을 시작하지 않는다.
+[정확한 권한 범위와 미완료 사항](fixer-activation.md)을 따른다. 실제 자동 수정 0회다.
+GitHub Actions contents write, 새로운 Secret, main 보호 규칙, Auto Merge는 변경하지 않았다.
