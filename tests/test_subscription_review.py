@@ -26,8 +26,33 @@ def test_child_is_chatgpt_only_readonly_and_independent(tmp_path):
     assert "features.multi_agent=false" in command
     assert "features.plugins=false" in command
     assert "features.hooks=false" in command
+    assert 'model_reasoning_effort="high"' in command
     assert "resume" not in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+
+
+def test_prompt_supplies_exact_objects_without_executing_head(monkeypatch):
+    context = {
+        "base": "a" * 40,
+        "head": "b" * 40,
+        "ci_url": "https://ci.invalid",
+        "ci_run_attempt": 1,
+    }
+    calls = []
+
+    def git(*args):
+        calls.append(args)
+        return "EXACT OBJECT " + " ".join(args)
+
+    monkeypatch.setattr(review, "git", git)
+    monkeypatch.setattr(
+        review.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess([], 0)
+    )
+    prompt = review.prompt_for(context, {"merge_base": context["base"]}, {"files": ["sample.py"]})
+    assert "untrusted_head_files" in prompt and "untrusted_diff" in prompt
+    assert ("show", context["head"] + ":sample.py") in calls
+    assert ("show", context["base"] + ":AGENTS.md") in calls
+    assert any(call[0] == "diff" and "--no-textconv" in call for call in calls)
 
 
 @pytest.mark.parametrize("login,code", [("Logged in using an API key", 0), ("Not logged in", 1)])
