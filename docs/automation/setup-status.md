@@ -53,13 +53,23 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 
 - Phase 1 감사 완료, Phase 2 로컬 검증 기반 구현, Phase 3 Skill/구조화 리뷰 도구 구현.
 - Phase 4 read-only workflow 작성·정적 검사 완료. 외부 Codex 실행 검증은 아직 아니다.
-- Windows Python 3.11.0에서 `python -m tools.ci`: 81 tests PASS,
+- Windows Python 3.11.0에서 `python -m tools.ci`: 103 tests PASS,
   Ruff lint/format, syntax/import, 문서·예제 설정 검사 PASS.
 - 7개 Skill 원본과 7개 탐색 진입점: bundled quick_validate PASS (Windows UTF-8 모드).
 - actionlint 1.7.7 정적 검사 PASS. release checksum 검증 후 artifacts 아래에서만 사용.
   shellcheck/pyflakes는 이 별도 검사에 미사용이며 Python은 Ruff/pytest로 검사했다.
-- GitHub CI와 별도 읽기 전용 reviewer: 기반 PR 생성 후 결과를 기록한다.
+- 기반 [draft PR #1](https://github.com/ckrhehfl/drone-vision-tracker/pull/1)을 생성했다.
+  첫 [CI run](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36727001553)은
+  GitHub에서 success로 표시되었으나 조회된 job step/log에 테스트 완료 증거가 빠져 있었다.
+  이를 원격 81개 테스트 통과의 증거로 간주하지 않는다. 최신 실행 증거는 PR에서 확인한다.
+- 독립 read-only reviewer가 `969e345` 전체 diff와 로컬 81개 테스트를 확인했다.
+  P2 1개(같은 SHA의 과거 성공 run 재사용), P3 1개(CI FAIL 집계 우선순위)를 제기했다.
+  Builder가 최신 run/attempt·필수 job/step 검사와 FAIL 우선 집계로 수정하고 회귀 테스트를 추가했다.
+  최신 commit의 재검토 결과는 PR 설명에서 SHA와 함께 관리한다. 이 문서는 승인 토큰이 아니다.
+- 리뷰 scope는 실제 논리 영역으로 묶어 현재 기반 변경을 3개 영역으로 분할한다.
+  작은 문서 하나마다 독립 API 실행을 만들지 않는다.
 - Arduino compile: 소스 없음으로 SKIP. 카메라/AI 품질/Serial/서보/펌웨어 업로드/레이저 미실행.
 - 다음 최초 gate: Phase 5 API 사용에 새 비용과 Secret이 필요하다.
   비용 승인을 받기 전 Secret 등록이나 외부 리뷰 활성화를 요구하지 않는다.
-- Auto Fix 0회, Auto Merge 비활성, main 직접 push/권한 변경 없음.
+- 설치된 Auto Fixer 실행 0회. 기반 구축 중 Builder 리뷰 수정 1회.
+  Auto Merge 비활성, main 직접 push/권한 변경 없음.

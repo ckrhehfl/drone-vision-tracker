@@ -48,6 +48,15 @@ def eligible(run, pr, repository, permission):
 def current_context(repository, run_id):
     run = api(f"repos/{repository}/actions/runs/{int(run_id)}")
     head = require_sha(run["head_sha"])
+    latest = api(
+        f"repos/{repository}/actions/workflows/ci.yml/runs"
+        f"?event=pull_request&head_sha={head}&per_page=100"
+    )
+    jobs = api(
+        f"repos/{repository}/actions/runs/{int(run_id)}/attempts/{int(run['run_attempt'])}"
+        "/jobs?per_page=100"
+    )
+    validate_ci_evidence(run, latest, jobs)
     candidates = api(f"repos/{repository}/commits/{head}/pulls?per_page=100")
     matches = [p for p in candidates if p["state"] == "open" and p["head"]["sha"] == head]
     if len(matches) != 1:
@@ -62,8 +71,40 @@ def current_context(repository, run_id):
         "head": head,
         "pr": pr["number"],
         "ci_run_id": int(run_id),
+        "ci_run_attempt": run["run_attempt"],
         "ci_url": run["html_url"],
     }
+
+
+def validate_ci_evidence(run, latest, jobs):
+    """Do not reuse a past green run or accept an incomplete required job."""
+    candidates = [r for r in latest["workflow_runs"] if r["head_sha"] == run["head_sha"]]
+    if not candidates:
+        raise ValueError("No current CI execution exists")
+    newest = max(candidates, key=lambda item: item["id"])
+    if (newest["id"], newest["run_attempt"]) != (run["id"], run["run_attempt"]):
+        raise ValueError("A newer CI execution supersedes this result")
+    if newest["status"] != "completed" or newest["conclusion"] != "success":
+        raise ValueError("Latest CI execution is not successful")
+    if jobs["total_count"] != len(jobs["jobs"]):
+        raise ValueError("Incomplete CI job evidence")
+    required = [j for j in jobs["jobs"] if j["name"] == "software-checks"]
+    if len(required) != 1:
+        raise ValueError("Missing or ambiguous required software-checks job")
+    job = required[0]
+    if (
+        job["head_sha"] != run["head_sha"]
+        or job["status"] != "completed"
+        or job["conclusion"] != "success"
+    ):
+        raise ValueError("Required CI job is stale or incomplete")
+    checks = [s for s in job["steps"] if s["name"] == "Run software checks"]
+    if (
+        len(checks) != 1
+        or checks[0]["status"] != "completed"
+        or checks[0]["conclusion"] != "success"
+    ):
+        raise ValueError("No successful software test step evidence")
 
 
 def fingerprint():
@@ -151,6 +192,8 @@ def main():
         if old != current_context(repo, run_id):
             raise ValueError("PR or CI metadata changed while reviewing")
         before = args.directory / "before.txt"
+        if args.scope and not before.is_file():
+            raise ValueError("Missing repository immutability baseline")
         if before.exists() and before.read_text(encoding="ascii") != fingerprint():
             raise ValueError("Reviewer modified repository files or Git state")
 

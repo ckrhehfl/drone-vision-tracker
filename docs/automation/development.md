@@ -63,6 +63,8 @@ workflow의 20분 timeout과 병렬 2개 제한은 금액 상한이 아니다.
 
 리뷰는 default branch의 workflow_run으로 성공 CI 이후 시작한다. 매 scope는 fresh Codex 세션이다.
 현재 API에서 PR이 열림/non-draft/동일 저장소/write 이상 작성자/최신 head/main base인지 다시 확인한다.
+같은 head의 최신 CI run/attempt와 필수 software-checks job 및 Run software checks step이
+모두 완료·성공했는지 검사한다. run 전체가 success여도 실제 검사 step 증거가 없으면 거부한다.
 판정 전에도 현재 SHA를 다시 검사한다. reviewer는 base checkout과 git 객체를 읽고
 PR의 스크립트·설정·AGENTS를 실행하지 않는다. sandbox=read-only, safety-strategy=drop-sudo,
 checkout credential 비저장, 모든 GITHUB_TOKEN 권한 read, 별도 임시 output 경로를 사용한다.

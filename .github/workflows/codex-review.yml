@@ -96,7 +96,8 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python -m tools.review_context verify --directory "$RUNNER_TEMP/review"
+          SCOPE: ${{ matrix.scope }}
+        run: python -m tools.review_context verify --directory "$RUNNER_TEMP/review" --scope "$SCOPE"
       - name: Validate structured result
         env:
           BASE: ${{ needs.plan.outputs.base }}

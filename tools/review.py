@@ -57,10 +57,20 @@ def plan_scopes(changes):
     groups = {}
     for path, _ in changes:
         area = area_for(path)
-        # Large reviews split along actual top-level subsystem boundaries.
-        subsystem = PurePosixPath(path).parts[0]
         key = "full" if size == "small" else area
-        if size == "large":
+        if size == "large" and area == "tests-automation":
+            # Keep tiny root/config documents together, split substantive automation domains.
+            is_review = PurePosixPath(path).stem.startswith(
+                ("review", "test_review", "codex-review")
+            ) or PurePosixPath(path).parts[0] in {".codex", ".agents", "schemas"}
+            key = "review-pipeline" if is_review else "ci-configuration"
+        elif size == "large" and area in {"vision", "control"}:
+            # Use the first actual package/module under drone_tracker, not the shared src root.
+            parts = list(PurePosixPath(path).parts)
+            if "drone_tracker" in parts:
+                subsystem = parts[parts.index("drone_tracker") + 1]
+            else:
+                subsystem = parts[0]
             key = f"{area}:{subsystem}"
         groups.setdefault(key, []).append(path)
     scopes = [
@@ -115,6 +125,11 @@ def validate_report(report, base, head, scope_files):
         )
     if report["status"] == "CHANGES_REQUESTED" and not report["blocking_findings"]:
         raise ValueError("CHANGES_REQUESTED requires an actionable blocking finding")
+    if (
+        report["status"] in {"HUMAN_DECISION_REQUIRED", "PHYSICAL_TEST_REQUIRED"}
+        and not report["unverified_items"]
+    ):
+        raise ValueError("Human or physical gate requires an explanation and observable evidence")
     return report
 
 
@@ -153,8 +168,10 @@ def merge_reports(reports, plan):
     for report in reports:
         result["test_summary"]["commands"].extend(report["test_summary"]["commands"])
         result["test_summary"]["notes"] += "\n" + report["test_summary"]["notes"]
-        if report["test_summary"]["ci"] != "PASS":
-            result["test_summary"]["ci"] = report["test_summary"]["ci"]
+        ci_rank = {"PASS": 0, "NOT_RUN": 1, "FAIL": 2}
+        result["test_summary"]["ci"] = max(
+            result["test_summary"]["ci"], report["test_summary"]["ci"], key=ci_rank.get
+        )
     statuses = {r["status"] for r in reports}
     for status in ("HUMAN_DECISION_REQUIRED", "PHYSICAL_TEST_REQUIRED", "CHANGES_REQUESTED"):
         if status in statuses:

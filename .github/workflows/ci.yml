@@ -23,4 +23,5 @@ jobs:
         with:
           python-version: '3.11.0'
       - run: python -m pip install -r requirements-dev.txt
-      - run: python -m tools.ci
+      - name: Run software checks
+        run: python -m tools.ci
