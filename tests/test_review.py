@@ -102,6 +102,26 @@ def test_severe_finding_cannot_be_nonblocking():
         validate_report(result, BASE, HEAD, ["tools/example.py"])
 
 
+def test_p3_finding_cannot_block():
+    result = report()
+    item = finding()
+    item["severity"] = "P3"
+    result["status"] = "CHANGES_REQUESTED"
+    result["blocking_findings"] = [item]
+    with pytest.raises(ValidationError, match="P3"):
+        validate_report(result, BASE, HEAD, ["tools/example.py"])
+
+
+def test_p3_finding_remains_visible_without_blocking():
+    result = report()
+    item = finding()
+    item["severity"] = "P3"
+    result["non_blocking_findings"] = [item]
+    assert validate_report(result, BASE, HEAD, ["tools/example.py"])["non_blocking_findings"] == [
+        item
+    ]
+
+
 @pytest.mark.parametrize(
     "count,lines,size",
     [

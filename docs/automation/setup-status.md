@@ -87,6 +87,11 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 - API를 호출하던 workflow를 제거하고 미구축 상태를 실패로 알리는 read-only 대기 workflow로 교체했다.
 - `tools.subscription_review`는 로컬 구독 인증·새 reviewer 세션·JSON Schema·최신 CI/SHA·clone 불변성을
   검증한다. 인증 파일을 CI에 전달하지 않으며 유료 fallback은 없다.
-- 로컬 Python 검사 120 tests PASS. Windows read-only sandbox의 명령 읽기 실행 확인.
-- 실제 구독 리뷰 및 Actions 결과 전달은 아직 미검증이다. 전체 Phase 6 완료를 뜻하지 않는다.
+- 로컬 Python 검사 122 tests PASS. Windows read-only sandbox의 명령 읽기 실행 확인.
+- `c5183f8`에 대해 실제 ChatGPT 구독 리뷰 3개 scope를 실행했다. JSON Schema·최신 CI/SHA·clone 불변성
+  검증 후 CHANGES_REQUESTED를 반환했다. P3를 blocking에 넣을 수 있는 결함 1개를 찾아
+  schema의 허용 severity를 제한하고 blocking 거부/non-blocking 보존 회귀 테스트를 추가했다.
+  수정 후 최신 SHA의 CI·독립 재리뷰 증거는 [PR #1](https://github.com/ckrhehfl/drone-vision-tracker/pull/1)에 기록한다.
+- Actions 결과 전달과 작은 테스트 PR의 전체 dry-run은 아직 미검증이다. Phase 6 완료가 아니다.
+- 다음 권한 gate는 별도 결과 게시 job의 `statuses: write`다. 아직 권한을 변경하지 않았다.
 - PC 가동이 로컬 리뷰의 전제다. GitHub Actions CI는 PC 없이 실행된다.
