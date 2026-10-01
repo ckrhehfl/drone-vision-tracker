@@ -1,0 +1,7 @@
+# path is relative to this YAML file, not the shell working directory.
+path: ../data/dataset
+train: images/train
+val: images/val
+test: images/test
+names:
+  0: drone
