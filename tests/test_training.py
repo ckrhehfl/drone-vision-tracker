@@ -168,7 +168,7 @@ def test_training_records_outcome_and_does_not_overwrite(tmp_path, monkeypatch, 
     data, manifest = dataset(tmp_path)
     weights = tmp_path / "base.pt"
     weights.write_bytes(b"local trusted test weights")
-    output = tmp_path / "output"
+    output = tmp_path / "학습"
     args = parser().parse_args(
         [
             "--data",
@@ -227,8 +227,9 @@ def test_training_records_outcome_and_does_not_overwrite(tmp_path, monkeypatch, 
             train(args, spec, summary)
     else:
         train(args, spec, summary)
-    record = json.loads((output / "training_record.json").read_text())
+    record = json.loads((output / "training_record.json").read_text(encoding="utf-8"))
     assert record["status"] == ("completed" if outcome == "completed" else "failed")
+    assert record["options"]["name"] == output.name
     assert record["test_evaluated"] is False
     assert record["accuracy_verified"] is False
     assert "finished_utc" in record
@@ -281,7 +282,7 @@ def test_synthetic_training_smoke(tmp_path, monkeypatch):
         )
         == 0
     )
-    record = json.loads((output / "training_record.json").read_text())
+    record = json.loads((output / "training_record.json").read_text(encoding="utf-8"))
     assert record["status"] == "completed"
     assert record["validation_objects"] == 1
     assert (output / "weights/best.pt").is_file()

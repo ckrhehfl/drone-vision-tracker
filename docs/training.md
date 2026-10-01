@@ -20,15 +20,19 @@ Windows/Linux 설치에는 사용하지 않는다.
 NVIDIA PC에서도 Python 3.11 가상환경을 만든 뒤 활성화한다.
 Windows PowerShell: `py -3.11 -m venv .venv`, `.venv\Scripts\Activate.ps1`.
 Linux: `python3.11 -m venv .venv`, `source .venv/bin/activate`.
-GPU·드라이버에 맞는 CUDA wheel을 먼저 확인한다. 아래 cu126은 공식 설치 조합의 예시다.
+GPU·드라이버에 맞는 CUDA wheel을 먼저 확인한다. 아래 cu128은 RTX 5070에서 검증한 조합이다.
+RTX 50 시리즈(Blackwell)는 CUDA 12.8 지원 wheel을 사용한다.
+[PyTorch Blackwell 지원 안내](https://pytorch.org/blog/pytorch-2-7/)를 참조한다.
 
 ```bash
-python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu126
+python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements-dev.txt -r requirements-training.txt
 python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
 ```
 
-CUDA 장비의 실제 호환성과 학습은 아직 검증하지 않았다.
+Windows x86_64 / RTX 5070 / Python 3.11.15에서 CUDA 연산과 합성 데이터 1 epoch 학습을 검증했다.
+명령·결과·한계는 [Windows CUDA 검증 기록](../reports/training_validation_windows_2026-10-01.md)을 참조한다.
+다른 GPU·드라이버 조합과 실제 지정 드론 정확도는 미검증이다.
 Mac/CUDA의 수치·속도·최적 batch가 같다고 보장하지 않는다.
 `--device auto`는 CUDA → MPS → CPU 순으로 선택한다.
 cuda/mps를 명시하면 해당 장치가 없을 때 실패한다.
@@ -131,8 +135,10 @@ CUDA PC PowerShell:
 ```powershell
 $env:RUN_TRAINING_SMOKE="1"
 $env:TRAINING_SMOKE_DEVICE="cuda"
-python -m pytest tests/test_training.py -k synthetic_training_smoke -q
+python -m pytest tests/test_training.py -k synthetic_training_smoke --basetemp=artifacts/windows-cuda-smoke -q
 ```
+
+학습 기록은 UTF-8 JSON이다. Windows에서도 읽을 때 `encoding="utf-8"`을 명시한다.
 
 사용 도구·가중치의 라이선스는 공개·배포 전에 확인한다.
 저장소 자체의 라이선스 결정은 변경하지 않았다.
