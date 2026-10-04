@@ -181,15 +181,24 @@ CALIBRATION_SCHEMA = object_schema(
 AUTOMATION_SCHEMA = object_schema(
     {
         "schema_version": constant(1),
-        "stage": constant("collaborative_merge_validation"),
+        "stage": {"enum": ["collaborative_merge_validation", "conditional_auto_merge"]},
         "review_backend": constant("local_chatgpt_subscription"),
         "paid_api_enabled": FALSE,
         "external_review_enabled": FALSE,
         "auto_fix_enabled": {"type": "boolean"},
-        "auto_merge_enabled": FALSE,
+        "auto_merge_enabled": {"type": "boolean"},
         "max_auto_fix_attempts": constant(2),
     }
 )
+
+# The verified operational stage permits an emergency disable. Preparation must
+# still reject merge activation; a feature branch cannot activate the coordinator.
+AUTOMATION_SCHEMA["allOf"] = [
+    {
+        "if": {"properties": {"stage": constant("collaborative_merge_validation")}},
+        "then": {"properties": {"auto_merge_enabled": FALSE}},
+    }
+]
 
 
 def validate_examples(project, calibration):
