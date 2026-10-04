@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from tools import local_pipeline as pipeline
+from tools import review_publication as publication
+from tools.decision_gate import decide
 
 
 @pytest.fixture
@@ -12,7 +14,6 @@ def driver(monkeypatch, tmp_path):
     (tmp_path / "config").mkdir()
     (tmp_path / "config/automation.json").write_text(json.dumps({"auto_fix_enabled": True}))
     monkeypatch.setattr(pipeline, "ROOT", tmp_path)
-    monkeypatch.setattr(pipeline, "ledger_path", lambda: tmp_path / "ledger")
     state = {"events": [], "used": 0, "statuses": ["CHANGES_REQUESTED", "PASS"]}
 
     def wait(pr, head):
@@ -29,6 +30,7 @@ def driver(monkeypatch, tmp_path):
                 {
                     "status": state["statuses"].pop(0),
                     "unverified_items": [],
+                    "test_summary": {"ci": "PASS"},
                 }
             )
         )
@@ -50,7 +52,20 @@ def driver(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "run_review", review)
     monkeypatch.setattr(pipeline, "publish", publish)
     monkeypatch.setattr(pipeline, "execute", fix)
-    monkeypatch.setattr(pipeline, "count_attempts", lambda *a: state["used"])
+
+    def assess(directory, run):
+        assert run == 9
+        state["events"].append(("gate", state["context"]["head"]))
+        report = json.loads((directory / "result.json").read_text())
+        status, action, reason = decide(report, state["used"])
+        return {
+            "status": status,
+            "next_action": action,
+            "reason": reason,
+            "fix_attempts": state["used"],
+        }
+
+    monkeypatch.setattr(pipeline, "assess", assess)
     return state
 
 
@@ -61,10 +76,12 @@ def test_fix_always_receives_new_ci_and_independent_review(driver):
         ("ci", "a" * 40),
         ("review", "a" * 40),
         ("publish", "a" * 40),
+        ("gate", "a" * 40),
         ("fix", "a" * 40),
         ("ci", "b" * 40),
         ("review", "b" * 40),
         ("publish", "b" * 40),
+        ("gate", "b" * 40),
     ]
 
 
@@ -183,7 +200,9 @@ def test_rerun_of_lower_id_is_latest(monkeypatch):
         pipeline.latest_ci("a" * 40)
 
 
-@pytest.mark.parametrize("altered", ["none", "artifact", "status", "context", "actor"])
+@pytest.mark.parametrize(
+    "altered", ["none", "artifact", "status", "context", "actor", "in_progress", "cancelled"]
+)
 def test_publication_requires_matching_artifact_status_and_current_sha(
     monkeypatch, tmp_path, altered
 ):
@@ -191,6 +210,7 @@ def test_publication_requires_matching_artifact_status_and_current_sha(
     bundle = {"report": {"status": "PASS"}, "evidence": {"context": context}}
     run = {
         "id": 9,
+        "status": "completed",
         "event": "workflow_dispatch",
         "head_sha": context["base"],
         "path": ".github/workflows/codex-review.yml",
@@ -205,17 +225,45 @@ def test_publication_requires_matching_artifact_status_and_current_sha(
         data = bundle if altered != "artifact" else {}
         (Path(args[-1]) / "bundle.json").write_text(json.dumps(data))
 
-    monkeypatch.setattr(pipeline.subprocess, "run", download)
-    monkeypatch.setattr(pipeline, "api", lambda _: {"statuses": [status]})
+    monkeypatch.setattr(publication.subprocess, "run", download)
+    monkeypatch.setattr(publication, "api", lambda _: {"statuses": [status]})
     monkeypatch.setattr(
-        pipeline, "current_context", lambda *a: {} if altered == "context" else context
+        publication, "current_context", lambda *a: {} if altered == "context" else context
     )
     if altered == "status":
         status["target_url"] = "old-run"
     if altered == "actor":
         run["triggering_actor"]["login"] = "outsider"
+    if altered == "in_progress":
+        run["status"] = "in_progress"
+    if altered == "cancelled":
+        run["conclusion"] = "cancelled"
     if altered == "none":
-        pipeline.validate_publication(run, bundle, tmp_path / "download")
+        publication.validate_publication(run, bundle, tmp_path / "download")
     else:
         with pytest.raises(ValueError):
-            pipeline.validate_publication(run, bundle, tmp_path / "download")
+            publication.validate_publication(run, bundle, tmp_path / "download")
+
+
+def test_failed_gate_never_starts_fixer(driver, monkeypatch):
+    def fail(*args):
+        raise ValueError("Gate evidence changed")
+
+    monkeypatch.setattr(pipeline, "assess", fail)
+    with pytest.raises(ValueError, match="Gate evidence changed"):
+        pipeline.drive(4, "a" * 40)
+    assert driver["used"] == 0
+
+
+def test_gate_request_for_reclassification_never_starts_fixer(driver, monkeypatch):
+    monkeypatch.setattr(
+        pipeline,
+        "assess",
+        lambda *a: {
+            "status": "CHANGES_REQUESTED",
+            "next_action": "REVIEW",
+            "fix_attempts": 0,
+        },
+    )
+    result = pipeline.drive(4, "a" * 40)
+    assert result["decision"]["next_action"] == "REVIEW" and driver["used"] == 0

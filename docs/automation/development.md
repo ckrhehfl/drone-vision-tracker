@@ -133,7 +133,10 @@ CI 실패는 `BUILDER_CI_FIX_REQUIRED`로 현재 Builder에게 넘긴다. 사람
 요청하지 않으며 Builder가 로그와 실패 테스트를 고친다. Fixer를 이미 사용한 PR에서 이
 표시를 이용해 수정 횟수를 초기화하거나 한도를 넘겨 수정하지 않는다. 제한 초과는 사람 gate다.
 인증/한도/timeout/외부 SHA 변경/게시 실패는 예외로 중단하며 유료 fallback이나 자동 재시도가 없다.
-CLI 결과 JSON의 PASS는 소프트웨어 리뷰 단계 완료이고 Decision Gate/실물/병합 완료가 아니다.
+CLI 결과 JSON의 PASS는 최신 CI·게시 리뷰·로컬 Decision Gate의 소프트웨어 판정 완료다.
+실물 검증·병합 완료가 아니다. 게시 후 Gate의 `decision.json`을 보존하며 FIX만 수정으로
+연결한다. REVIEW는 필수 미검증 항목을 reviewer에게 재분류시키고 STOP은 해당 gate를 따른다.
+단독 Gate 명령과 결과 계약은 [Decision Gate](decision-gate.md)를 참조한다.
 PC가 켜져 있고 이 로컬 명령이 실행 중이어야 한다. GitHub runner에는 구독 인증을 배포하지 않는다.
 
 ## 공식 근거

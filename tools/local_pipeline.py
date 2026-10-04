@@ -9,10 +9,12 @@ from datetime import datetime
 from pathlib import Path
 
 from tools.auto_fix import execute, load_bundle, require_publishing_guards
-from tools.fix_attempts import MAX_AUTO_FIX_ATTEMPTS, count_attempts, ledger_path
+from tools.decision_gate import assess
+from tools.fix_attempts import MAX_AUTO_FIX_ATTEMPTS
 from tools.publish_review import dispatch_payload, live_bundle
 from tools.review import ROOT, require_sha
 from tools.review_context import api, current_context, write_json
+from tools.review_publication import validate_publication
 from tools.subscription_review import REPOSITORY, run_review
 from tools.validate_config import strict_json
 
@@ -111,50 +113,6 @@ def publish(directory):
     raise TimeoutError("Review publication wait exceeded 15 minutes")
 
 
-def validate_publication(run, bundle, destination):
-    context = bundle["evidence"]["context"]
-    owner = REPOSITORY.split("/")[0]
-    expected = "success" if bundle["report"]["status"] == "PASS" else "failure"
-    if (
-        run["event"] != "workflow_dispatch"
-        or run["head_sha"] != context["base"]
-        or run["path"] != ".github/workflows/codex-review.yml"
-        or run["actor"]["login"] != owner
-        or run["triggering_actor"]["login"] != owner
-        or run["conclusion"] != expected
-    ):
-        raise ValueError("Publication did not complete from the trusted base/owner")
-    destination.mkdir(exist_ok=False)
-    subprocess.run(
-        [
-            "gh",
-            "run",
-            "download",
-            str(run["id"]),
-            "--repo",
-            REPOSITORY,
-            "--name",
-            "validated-review",
-            "--dir",
-            str(destination),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    saved = strict_json((destination / "bundle.json").read_text(encoding="utf-8"))
-    if saved != bundle:
-        raise ValueError("Published structured evidence does not match the local review")
-    statuses = api(f"repos/{REPOSITORY}/commits/{context['head']}/status")["statuses"]
-    status = next((item for item in statuses if item["context"] == "codex-review"), None)
-    if (
-        not status
-        or status["target_url"] != run["html_url"]
-        or status["state"] != expected
-        or current_context(REPOSITORY, context["ci_run_id"]) != context
-    ):
-        raise ValueError("Missing, stale or failed result publication")
-
-
 def drive(pr, head):
     """A finite loop; every new head gets a new CI and a fresh independent review."""
     head = require_sha(head)
@@ -179,26 +137,20 @@ def drive(pr, head):
         if bundle["evidence"]["context"] != context:
             raise ValueError("Review no longer matches the selected CI")
         publication = publish(directory)
-        report = bundle["report"]
-        used = count_attempts(ledger_path(), REPOSITORY, pr)
+        gate = assess(directory, publication)
+        write_json(operation / "decision.json", gate)
         result = {
-            "status": report["status"],
+            "status": gate["status"],
             "pr": pr,
             "head": head,
             "review_directory": str(directory),
             "publication_run": publication,
-            "fix_attempts": used,
+            "fix_attempts": gate["fix_attempts"],
+            "decision": gate,
             "merge": "DISABLED",
         }
         write_json(operation / "result.json", result)
-        if report["status"] != "CHANGES_REQUESTED":
-            return result
-        if any(item["merge_blocker"] for item in report["unverified_items"]):
-            return result
-        if used >= MAX_AUTO_FIX_ATTEMPTS:
-            result["status"] = "HUMAN_DECISION_REQUIRED"
-            result["reason"] = "Maximum two automatic fix attempts exhausted"
-            write_json(operation / "result.json", result)
+        if gate["next_action"] != "FIX":
             return result
         if not settings["auto_fix_enabled"]:
             result["reason"] = "Automatic fixer is not yet activated"

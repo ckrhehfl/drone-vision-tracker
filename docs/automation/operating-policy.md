@@ -99,7 +99,7 @@ reviewer 프로세스는 read-only sandbox를 사용한다. 결과는 로컬 JSO
 
 Phase 6에서 별도 publisher의 최신 SHA `codex-review` 게시를 검증했다. main은 관리자에게도
 PR과 strict `software-checks`/`codex-review`를 요구하고 force/delete를 금지한다.
-자동 Fixer의 제한된 검증 단계와 상세 증거는 현재 상태를 따른다. Decision Gate/Auto Merge는 비활성이다.
+자동 Fixer와 로컬 Decision Gate의 단계·검증 증거는 현재 상태를 따른다. Auto Merge는 비활성이다.
 2026-10-04의 v1.1 보완은 이 권한 경계·PR당 2회 한도·기존 중단 조건을 바꾸지 않는다.
 
 이후 사용자 A 선택에 따른 [D22](../05_decisions.md)는 PR #4 준비 코드의 남은 finding에만
@@ -109,4 +109,5 @@ Builder 보완 1회를 추가한다. 이전 두 회는 보존하고 운영 MAX_A
 Phase 7의 Fixer는 사용자 요청 범위의 기존 로컬 권한으로 후보 파일을 수정하며, 부모 publisher가
 동일 PR feature branch에 일반 push한다. Actions contents write나 새 Secret은 추가하지 않는다.
 이 변경을 승인된 main에 통합한 뒤 제한된 활성화 설정을 사용한다. 실제 push 후 CI/새 리뷰를
-검증하기 전에는 Phase 7 완료라고 하지 않는다. Decision Gate/Auto Merge는 이후 단계다.
+검증하기 전에는 Phase 7 완료라고 하지 않는다. Phase 8 Gate는 코드 수정 없이 최신 증거를
+판정하며 [계약](decision-gate.md)을 따른다. Auto Merge는 Phase 9까지 비활성이다.

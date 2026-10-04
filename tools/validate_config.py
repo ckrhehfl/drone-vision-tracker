@@ -181,7 +181,7 @@ CALIBRATION_SCHEMA = object_schema(
 AUTOMATION_SCHEMA = object_schema(
     {
         "schema_version": constant(1),
-        "stage": constant("bounded_local_fix_validation"),
+        "stage": constant("local_decision_gate_validation"),
         "review_backend": constant("local_chatgpt_subscription"),
         "paid_api_enabled": FALSE,
         "external_review_enabled": FALSE,

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local Phase 8 decision snapshot, never merge authorization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "context", "publication_run", "bundle_sha256", "review_status", "status", "next_action", "reason", "blocking_findings", "non_blocking_findings", "fix_attempts", "max_auto_fix_attempts", "unverified_items", "merge"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "head", "pr", "ci_run_id", "ci_run_attempt", "ci_started_at", "ci_url"],
+      "properties": {
+        "base": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "pr": {"type": "integer", "minimum": 1},
+        "ci_run_id": {"type": "integer", "minimum": 1},
+        "ci_run_attempt": {"type": "integer", "minimum": 1},
+        "ci_started_at": {"type": "string", "minLength": 1},
+        "ci_url": {"type": "string", "minLength": 1}
+      }
+    },
+    "publication_run": {"type": "integer", "minimum": 1},
+    "bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "review_status": {"enum": ["PASS", "CHANGES_REQUESTED", "HUMAN_DECISION_REQUIRED", "PHYSICAL_TEST_REQUIRED"]},
+    "status": {"enum": ["PASS", "CHANGES_REQUESTED", "HUMAN_DECISION_REQUIRED", "PHYSICAL_TEST_REQUIRED"]},
+    "next_action": {"enum": ["PROCEED", "FIX", "REVIEW", "STOP"]},
+    "reason": {"type": "string", "minLength": 1},
+    "blocking_findings": {"type": "integer", "minimum": 0},
+    "non_blocking_findings": {"type": "integer", "minimum": 0},
+    "fix_attempts": {"type": "integer", "minimum": 0, "maximum": 2},
+    "max_auto_fix_attempts": {"const": 2},
+    "unverified_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item", "merge_blocker", "observation", "expected_result"],
+        "properties": {
+          "item": {"type": "string", "minLength": 1},
+          "merge_blocker": {"type": "boolean"},
+          "observation": {"type": "string", "minLength": 1},
+          "expected_result": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "merge": {"const": "DISABLED"}
+  }
+}

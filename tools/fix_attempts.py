@@ -60,7 +60,9 @@ def connect(path):
 def count_attempts(path, repository, pr):
     if not path.exists():
         return 0
-    with closing(connect(path)) as connection:
+    with closing(
+        sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+    ) as connection:
         return connection.execute(
             "SELECT COUNT(*) FROM attempts WHERE repository=? AND pr=?", (repository, pr)
         ).fetchone()[0]

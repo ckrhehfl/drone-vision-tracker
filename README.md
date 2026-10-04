@@ -36,7 +36,7 @@ GitHub 업로드는 사용자 허락 후 PR로 진행합니다.
 ## Codex 작업 시작
 저장소 루트에서 `AGENTS.md`와 최신 결정·구현 계획을 읽고 `prompts/implementation.md`의 작업 범위를 선택한 단계에 맞춥니다. 학습 도구의 기존 환경 검증을 보존하고, 실제 데이터의 P2 평가 또는 미구현 P1 영상 입력부터 이어갑니다. 구현 후에는 `prompts/review.md`로 별도 리뷰 작업을 시작합니다.
 
-GitHub Actions CI와 ChatGPT 구독의 로컬 독립 리뷰·최대 2회 Fixer를 연결했습니다. [실제 수정·재검증 기록](docs/automation/fix-dry-run.md), [구축 상태](docs/automation/setup-status.md), [실행 방법](docs/automation/development.md)을 확인합니다. 승인된 main 설정에서만 제한된 Fixer가 실행됩니다. Decision Gate는 다음 단계이며 별도 유료 API·Auto Merge는 비활성입니다. 로컬 자동화에는 PC 가동이 필요합니다.
+GitHub Actions CI와 ChatGPT 구독의 로컬 독립 리뷰·최대 2회 Fixer를 연결했습니다. [실제 수정·재검증 기록](docs/automation/fix-dry-run.md), [구축 상태](docs/automation/setup-status.md), [실행 방법](docs/automation/development.md)을 확인합니다. 승인된 main 설정에서만 제한된 Fixer가 실행됩니다. [Decision Gate](docs/automation/decision-gate.md)는 최신 증거로 진행·수정·사람 판단·실물 시험을 구분합니다. 별도 유료 API·Auto Merge는 비활성입니다. 로컬 자동화에는 PC 가동이 필요합니다.
 
 ## GitHub에 올리기
 ZIP을 풀고 **README.md와 AGENTS.md가 있는 폴더를 저장소 루트**로 사용합니다. ZIP 한 개를 저장소에 올리는 것이 아니라 압축을 푼 파일·폴더를 커밋합니다. 아래는 새 로컬 폴더를 새 빈 원격 저장소에 올릴 때의 예시입니다. 기존 저장소에는 `git init`을 반복하지 말고 기존 이력을 유지합니다.
