@@ -5,6 +5,11 @@
 ---
 이 저장소의 AGENTS.md, README.md, docs/01_system_design.md, docs/05_decisions.md, docs/04_implementation_plan.md를 먼저 읽어라.
 
+docs/07_single_camera_operating_envelope.md의 v1.1 기준도 명시적으로 읽어라. 단일 카메라·
+기존 2축/전원을 유지하고 거리·스테레오·추가 축·자동 뒤집기·레이저를 구현하지 마라.
+해당 모듈이 있을 때 SC01–SC08의 경계/누적 방지/안쪽 복귀/소실/재ARM 동작을 검증해라.
+모듈이 없으면 인터페이스·시험 계획으로 남겨라. 실측값을 만들거나 기존 목표/분모를 낮추지 마라.
+
 현재 작업은 P0 환경 확인과 P1 영상 입력 준비다. 이번 작업 범위와 파일 변경 계획을 제시하고 실제 환경을 확인해라. 카메라·Serial·서보를 자동 가동하지 말고 비용·외부 업로드·새 에이전트 도구 설치는 먼저 승인받아라.
 
 먼저 OS, Python, GPU 종류·VRAM, 드라이버, 기존 패키지를 확인하고 결과를 templates/environment_record.md 형식으로 기록해라. 확인할 수 없는 항목은 추정하지 마라. 설치 방식과 버전은 조사 후 제안하고 호환성을 근거로 고정해라.
