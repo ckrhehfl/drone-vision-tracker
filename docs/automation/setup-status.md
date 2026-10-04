@@ -7,8 +7,9 @@ PR #5와 v1.1 PR #6은 CI/독립 리뷰 PASS 후 병합했다. 원본 v1.1 폴�
 PR #4도 승인된 추가 1회 보완, CI 250 passed/1 skipped, 독립 리뷰 3개 범위 PASS 후 병합했다.
 PR #7은 driver/활성화 준비를 검증해 병합했다. PR #8은 실제 Fixer 1회 → 새 CI → 새 리뷰 PASS를
 확인한 뒤 병합 없이 닫았다. 운영 최대 2회와 승인된 main에서만 실행하는 경계를 유지한다.
-현재 auto_fix_enabled=true, auto_merge_enabled=false다. Phase 8 로컬 Decision Gate를 구축한다.
-CI/독립 리뷰 통합 후 실제 PR 검증까지 해야 완료다. [Gate 계약](decision-gate.md)을 따른다.
+현재 auto_fix_enabled=true, auto_merge_enabled=false다. Phase 8 로컬 Decision Gate 구현을
+PR #10의 CI/독립 리뷰 PASS 후 통합했다. [Gate 계약](decision-gate.md)과
+[실제 PR 검증 기록](decision-gate-verification.md)을 따른다. 연결 검증 완료 전 단계다.
 
 ## Phase 1 감사
 
