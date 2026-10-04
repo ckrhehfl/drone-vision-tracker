@@ -97,7 +97,11 @@ reviewer 프로세스는 read-only sandbox를 사용한다. 결과는 로컬 JSO
 구독 인증 검증, 기반 PR 통합, 작은 검증 PR을 순서대로 진행한다.
 이는 운영 auto merge를 미리 활성화하는 것과 다르다.
 
-Phase 9 전까지 리뷰 workflow 결과는 PR head의 required status가 아니다.
-향후 별도 최소권한 publisher가 최신 SHA에 status를 기록하고 ruleset이 이를 강제해야 한다.
-그 쓰기 권한, branch 제한 credential, GITHUB_TOKEN push의 workflow 재트리거 문제는
-Phase 7/9에서 승인·검증한다. 현재 read-only 기반이 이를 구현했다고 해석하지 않는다.
+Phase 6에서 별도 publisher의 최신 SHA `codex-review` 게시를 검증했다. main은 관리자에게도
+PR과 strict `software-checks`/`codex-review`를 요구하고 force/delete를 금지한다.
+자동 Fixer·Decision Gate·Auto Merge는 준비/미활성 상태이며 상세 증거와 중단 지점은 현재 상태를 따른다.
+2026-10-04의 v1.1 보완은 이 권한 경계·PR당 2회 한도·기존 중단 조건을 바꾸지 않는다.
+
+이후 사용자 A 선택에 따른 [D22](../05_decisions.md)는 PR #4 준비 코드의 남은 finding에만
+Builder 보완 1회를 추가한다. 이전 두 회는 보존하고 운영 MAX_AUTO_FIX_ATTEMPTS=2는 유지한다.
+새 CI/독립 리뷰 없이 통합하지 않으며, 추가 회차가 실패하면 다시 사람 판단을 요청한다.

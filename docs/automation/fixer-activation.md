@@ -41,7 +41,10 @@ parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행�
    새 `tests/**/test_*.py` 파일만 수정한다. 일반 Builder 작업과 달리 이 한정된 Fixer에서는
    기존 테스트 파일을 수정하지 않으며 필요한 회귀 테스트는 새 파일로 작성한다.
 4. Git 메타데이터 전체(모드·hooks·index 포함)의 변경, 파일 삭제, symlink/외부 경로,
-   허용 목록 밖 변경, 기존 테스트 변경, 새 skip/xfail을 거부한다. 부모 Git의 hooks 경로는
+   허용 목록 밖 변경, 기존 테스트 변경, 새 skip/xfail/importorskip을 거부한다.
+   명시적 속성 접근과 직접 import(별칭 포함), pytest/_pytest 와일드카드 import를 검사한다.
+   이미 승인된 테스트의 skip은 그대로 보존한다. 동적 호출이나 임의 테스트 무력화를 모두
+   증명하는 검사는 아니며 아래 새 독립 리뷰를 대체하지 않는다. 부모 Git의 hooks 경로는
    별도 디렉터리로 고정한다. commit 시 비어 있으며 push 전에 부모의 SHA 검증 hook만 둔다.
    이 검사만으로 모든 의미적 결함을 판별하지는 못하므로
    새 독립 리뷰가 반드시 필요하다.

@@ -90,10 +90,23 @@ def fixer_command(executable, checkout, output):
 
 
 def skip_nodes(source):
+    # Inspect imports before aliases hide their original names. This is a static
+    # guard for explicit skip mechanisms, not proof that every test will execute.
+    skip_names = {"skip", "skipif", "xfail", "importorskip"}
     return Counter(
         ast.dump(node, include_attributes=False)
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Attribute) and node.attr in {"skip", "skipif", "xfail"}
+        if (isinstance(node, ast.Attribute) and node.attr in skip_names)
+        or (
+            isinstance(node, ast.ImportFrom)
+            and any(
+                alias.name in skip_names
+                or (
+                    alias.name == "*" and (node.module or "").split(".")[0] in {"pytest", "_pytest"}
+                )
+                for alias in node.names
+            )
+        )
     )
 
 
