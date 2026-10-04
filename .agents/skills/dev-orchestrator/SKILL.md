@@ -1,6 +1,6 @@
 ---
 name: dev-orchestrator
-description: 이 저장소의 기능 요청을 구현·로컬 검사·feature branch·PR로 진행하고 승인된 자동화 단계까지 연결한다.
+description: 기능 요청을 구현·CI·독립 리뷰·최대 2회 수정으로 진행하고, 요청받은 경우 보호된 PR을 병합한다.
 ---
 
 [원본 Skill](../../../.codex/skills/dev-orchestrator/SKILL.md)을 읽고 따른다.

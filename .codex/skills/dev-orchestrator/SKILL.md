@@ -1,32 +1,32 @@
 ---
 name: dev-orchestrator
-description: 이 저장소의 기능 요청을 구현·로컬 검사·feature branch·PR로 진행하고 승인된 자동화 단계까지 연결한다.
+description: 기능 요청을 구현·CI·독립 리뷰·최대 2회 수정으로 진행하고, 요청받은 경우 보호된 PR을 병합한다.
 ---
 
-[운영 규칙](../../../docs/automation/operating-policy.md)과 [구축 상태](../../../docs/automation/setup-status.md)를 읽는다.
-README → 설계 → 결정 기록 → AGENTS 순으로 요구사항과 완료 조건을 확정한다.
-일반 기술 선택은 직접 결정한다. 원본 요구사항, test 기준, MVP, 하드웨어는 낮추지 않는다.
+[운영 규칙](../../../docs/automation/operating-policy.md)과 [실행 안내](../../../docs/automation/development.md)를 읽는다.
+README → 설계 → 결정 기록 → AGENTS 순으로 범위와 완료 조건을 확인한다.
+각 사용자의 Codex와 GitHub 인증, 현재 저장소 권한을 사용한다. 소유자 PC나 별도 서버는 필요 없다.
+일반 기술 선택은 직접 결정한다. 비용·권한·범위·실물 판단은 운영 규칙의 gate를 따른다.
 
-깨끗한 상태를 확인하고 main이 아닌 feature branch에서 한 목표를 구현한다.
-`python -m tools.ci`를 실행하고 실패 원인을 수정한다. 실제 장치를 열지 않는다.
-검증한 파일만 커밋·push하고 PR을 만든다. 미완성 PR은 draft로 유지한다.
-실제 base/head SHA와 CI 결과를 별도 reviewer에 전달한다. 작성자의 요약은 증거가 아니다.
-리뷰 결과는 `tools.review`로 검증하며 자신이 자신의 변경을 PASS 처리하지 않는다.
-현재 단계가 허용하지 않는 외부 AI·Fixer·Merge를 시작하지 않는다.
-단계 6 검증 전에는 자동 수정 권한을 활성화하지 않는다.
-승인된 깨끗한 main checkout에서 `python -m tools.local_pipeline --pr <번호> --head <SHA>`로
-최신 CI 대기 → 독립 리뷰 → 전체 결과 게시를 연결한다. 설정이 허용한 때만 Fixer를 호출한다.
-게시 후 Decision Gate가 현재 증거를 재검증한다. `next_action=REVIEW`면 필수 미검증 항목을
-독립 reviewer가 명확히 분류하도록 하고, FIX/STOP/PASS 판정을 자의적으로 바꾸지 않는다.
-Phase 8의 PASS는 병합 허가가 아니다. Auto Merge는 Phase 9 검증 전까지 꺼 둔다.
-협업자 요청은 [접수 계약](../../../docs/automation/collaborators.md)을 따른다.
-허용된 현재 계정만 요청하고 소유자 PC의 승인된 최신 main에서 `tools.automation_worker`가 처리한다.
-요청 이력·PR당 수정 이력을 초기화하지 않는다. 실제 활성화 상태는 main 설정/구축 상태를 확인한다.
-검증된 Phase 9에서는 worker가 서버 Gate를 게시하고 조건을 충족할 때만 별도 병합기를 호출한다.
-주기 실행은 운영 검증 PR의 실제 설정을 확인한다. 대기 요청이 없을 때 불필요한 AI 리뷰를 시작하지 않는다.
-`BUILDER_CI_FIX_REQUIRED`는 사람 결정이 아니다. CI 로그로 일반 오류를 수정하고 새 SHA로
-다시 실행한다. 이미 Fixer 시도를 사용한 PR에서는 이 경로로 2회 한도를 우회하지 않는다.
-timeout/인증/게시 오류는 PASS가 아니다. 기술 오류를 해결한 뒤 현재 SHA의 증거로 재개한다.
-진행 중 외부 변경으로 head/base가 바뀌면 이전 결과를 재사용하지 않는다.
-권한이 생겨도 main 직접 push, force push, 테스트 약화는 금지한다.
-종료 시 운영 규칙의 짧은 상태 형식으로 보고한다.
+1. Git 상태를 확인하고 사용자 변경을 보존한 feature branch에서 구현한다.
+   `python -m tools.ci`로 검사한다. 실제 장치를 열지 않는다.
+2. 허용된 파일만 커밋·push하고 PR을 만든다. 미완성은 draft로 유지한다.
+   CI 실패는 로그와 요구사항으로 고친다. 테스트를 약화하지 않는다.
+3. review 가능한 PR의 최신 CI 성공을 확인한 뒤, 작성·수정 세션과 분리된 새 세션에
+   [review-orchestrator](../review-orchestrator/SKILL.md)를 맡긴다.
+   PR 번호, 정확한 base/head, 실제 diff, CI URL/attempt, 승인된 요구사항을 전달한다.
+   자신의 변경을 직접 PASS 처리하지 않는다.
+4. 모든 scope JSON을 `tools.review merge`로 검증·통합하고 원문을 PR에 기록한다.
+   blocking finding이 있으면 [fix-findings](../fix-findings/SKILL.md)로 전환한다.
+   PR의 누적 수정 기록을 이어받으며 최대 2회다. 매 수정 뒤 CI와 새 독립 리뷰를 반복한다.
+5. [decision-gate](../decision-gate/SKILL.md)로 현재 증거를 판정한다.
+   Gate는 판단만 하고 코드를 수정하거나 병합하지 않는다.
+6. 사용자 요청에 병합까지 포함되어 있고 Gate PASS이면, 직전에 GitHub의 base/head,
+   최신 CI 실행·attempt와 보호 상태를 다시 확인하고 정확한 head로 일반 PR 병합을 요청한다.
+   SHA 변경, 새 CI 실패/진행 중, 충돌, 미해결 대화가 있으면 해결·재검증한다.
+   main 직접 push, force push, 관리자 우회, 보호 설정 변경으로 통과시키지 않는다.
+
+새 독립 세션이 없으면 리뷰 인계 자료를 남기고 해당 세션에서 이어간다.
+재시도·게시·세션 변경으로 수정 한도를 초기화하지 않는다. 증거 누락은 PASS가 아니다.
+background polling, Actions AI 실행, 소유자 계정 대행, 무인 자동 병합은 이 Skill의 동작이 아니다.
+기존 사용자 승인 범위에서 진행하고 운영 규칙의 짧은 결과 형식으로 보고한다.

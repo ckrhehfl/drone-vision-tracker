@@ -1,6 +1,6 @@
 ---
 name: review-tests
-description: 테스트·설정·CI 변경의 요구사항 누락과 실패 경로, 리뷰 파이프라인의 SHA·권한 경계를 검토한다.
+description: 테스트·설정·CI 변경에서 요구사항 누락과 실패 경로, 리뷰 증거의 SHA·권한 경계를 검토한다.
 ---
 
 [원본 Skill](../../../.codex/skills/review-tests/SKILL.md)을 읽고 따른다.

@@ -36,25 +36,17 @@ GitHub 업로드는 사용자 허락 후 PR로 진행합니다.
 ## Codex 작업 시작
 저장소 루트에서 `AGENTS.md`와 최신 결정·구현 계획을 읽고 `prompts/implementation.md`의 작업 범위를 선택한 단계에 맞춥니다. 학습 도구의 기존 환경 검증을 보존하고, 실제 데이터의 P2 평가 또는 미구현 P1 영상 입력부터 이어갑니다. 구현 후에는 `prompts/review.md`로 별도 리뷰 작업을 시작합니다.
 
-GitHub Actions CI와 ChatGPT 구독의 로컬 독립 리뷰·최대 2회 Fixer를 연결했습니다. [실제 수정·재검증 기록](docs/automation/fix-dry-run.md), [구축 상태](docs/automation/setup-status.md), [실행 방법](docs/automation/development.md)을 확인합니다. 승인된 main 설정에서만 제한된 Fixer가 실행됩니다. [Decision Gate](docs/automation/decision-gate.md)는 최신 증거로 진행·수정·사람 판단·실물 시험을 구분합니다. 별도 유료 API는 사용하지 않습니다. [조건부 병합](docs/automation/auto-merge.md)은 최신 CI·독립 리뷰·서버 Gate가 모두 통과해야 합니다. 로컬 자동화에는 PC 가동이 필요합니다.
+팀원은 자신의 Codex에서 `$dev-orchestrator <기능 요청>`으로 공통 스킬을 사용합니다.
+별도 세션의 독립 리뷰, PR당 최대 2회 수정, Decision Gate를 거쳐 요청받은 PR을 병합합니다.
+GitHub Actions는 일반 CI를 실행합니다. 별도의 AI API Key나 소유자 PC 상시 가동은 필요 없습니다.
+[팀원 안내](docs/automation/collaborators.md)와 [실행 방법](docs/automation/development.md)을 확인하세요.
+스킬은 협업 절차이며 계정 권한을 추가하거나 무인 병합 서비스를 실행하지 않습니다.
 
-## GitHub에 올리기
+## GitHub 협업
 
-현재 협업자의 자동화 요청 방법은 [협업자 안내](docs/automation/collaborators.md)에 있습니다.
-허용 계정과 현재 권한을 검사하고, 승인된 main 설정과 검증된 최신 커밋을 기준으로 처리합니다.
-ZIP을 풀고 **README.md와 AGENTS.md가 있는 폴더를 저장소 루트**로 사용합니다. ZIP 한 개를 저장소에 올리는 것이 아니라 압축을 푼 파일·폴더를 커밋합니다. 아래는 새 로컬 폴더를 새 빈 원격 저장소에 올릴 때의 예시입니다. 기존 저장소에는 `git init`을 반복하지 말고 기존 이력을 유지합니다.
-
-```bash
-git init
-git add .
-git commit -m "docs: initialize drone tracker design v1.0"
-git branch -M main
-# GitHub에서 만든 빈 저장소 URL을 아래에 넣습니다.
-git remote add origin <YOUR_REPOSITORY_URL>
-git push -u origin main
-```
-
-숨김 파일인 `.gitignore`, `.gitattributes`, `.github/`도 포함합니다. 공개 전에 촬영 자료·개인정보·모델 라이선스·팀 공개 동의를 확인합니다. 라이선스는 임의로 지정하지 않았습니다.
+기존 저장소는 feature branch와 PR로 변경합니다. main 직접 push나 보호 우회는 하지 않습니다.
+각자의 기존 GitHub 권한을 사용하고, 병합 직전에 최신 CI·독립 리뷰·Gate 결과를 확인합니다.
+촬영 자료·개인정보·가중치·키를 커밋하지 않습니다. 라이선스는 임의로 지정하지 않았습니다.
 
 ## 포함된 검사
 Python이 있는 환경에서 아래 명령은 패키지 구조와 예제 설정만 검사합니다. GPU·카메라·시리얼 장치·인터넷을 사용하지 않습니다.

@@ -1,51 +1,45 @@
-# Phase 8 — 로컬 Decision Gate
+# 스킬의 Decision Gate
 
-Gate는 코드를 작성하거나 수정하지 않고 AI·Fixer·하드웨어·병합을 실행하지 않는다.
-승인된 main의 도구로 최신 증거를 조회해 다음 행동만 판정한다. Phase 8 구현을 독립 리뷰/CI로
-통합한 뒤 실제 PR에서 확인한다. 완료 증거는 [현재 상태](setup-status.md)를 따른다.
+이 Gate는 코드·설정·PR을 바꾸지 않고 현재 증거만 판정한다.
+별도 서버나 필수 GitHub status 게시기는 없다. 적용 절차는 [운영 규칙](operating-policy.md)과
+[공유 스킬](development.md)을 따른다.
 
-```powershell
-.venv/Scripts/python -m tools.decision_gate --directory artifacts/subscription-review/<실행> --publication-run <게시-run-ID>
+확인할 증거:
+
+- PR의 현재 base/head와 draft/병합 상태.
+- 정확한 head의 최신 CI 실행·attempt 및 software-checks 실제 검사 단계 성공.
+- 모든 범위를 포함한 독립 리뷰 JSON과 reviewer 세션 식별, base/head 일치.
+- PR 전체 수정 이력, 최대 2회 한도, 진행 중인 다른 수정 여부.
+- 미해결 사람 판단, 필수 실물 시험의 관찰 방법·기대 결과·실제 증거.
+- 기존 PR 보호와 미해결 대화. 보호를 우회해 병합하지 않는다.
+
+기록 예시(placeholder는 실제 값으로 대체):
+
+```json
+{
+  "reviewed_base": "<40자리 SHA>",
+  "reviewed_commit": "<40자리 SHA>",
+  "status": "PASS",
+  "ci_run": "<URL>",
+  "ci_attempt": 1,
+  "review": "<전체 JSON 링크>",
+  "fix_attempts": 0,
+  "reasons": [],
+  "unverified_items": [],
+  "next_action": "MERGE_IF_REQUESTED"
+}
 ```
 
-입력은 리뷰 `result.json`/`evidence.json`과 게시 workflow run ID다. CI run/attempt·PR·base/head,
-전체 diff coverage, ChatGPT 인증과 reviewer 파일 불변성, 게시 주체·workflow·artifact 원본·
-최신 `codex-review` status를 다시 확인한다. 깨끗한 최신 main과 기존 main 보호도 확인한다.
-Gate는 Git 객체/임시 artifact를 조회할 수 있지만 저장소 소스·설정·ledger를 수정하지 않는다.
-실패/취소/skip/누락/구조 오류/과거 SHA/실행 중 증거 변경은 예외로 종료하며 PASS를 반환하지 않는다.
-자동 재시도나 유료 API 전환은 없다.
+status는 PASS / CHANGES_REQUESTED / HUMAN_DECISION_REQUIRED / PHYSICAL_TEST_REQUIRED다.
+일반 수정은 CHANGES_REQUESTED와 FIX, 오래된·누락된 증거는 CHANGES_REQUESTED와
+REFRESH_EVIDENCE로 반환한다. 진행 중 수정은 완료를 기다린다.
+실제 계정 인증 등 사용자 직접 조작이 필요하면 운영 규칙의 HUMAN_ACTION_REQUIRED를 출력한다.
+CI 실패·진행 중·취소·skip을 PASS로 판정하지 않는다. 새 base/head는 새 CI·독립 리뷰가 필요하다.
 
-| 검증된 리뷰와 수정 이력 | Gate 상태 | 다음 행동 |
-|---|---|---|
-| PASS, blocking 0, 필수 미검증 0 | PASS | PROCEED: 소프트웨어 판단 완료 |
-| 일반 blocking finding, 수정 0~1회 | CHANGES_REQUESTED | FIX: driver가 활성화 설정 확인 후 Fixer 호출 |
-| CHANGES_REQUESTED에 종류 미분류 필수 증거 존재 | CHANGES_REQUESTED | REVIEW: reviewer가 필수 항목의 성격을 명확히 분류 |
-| blocking finding이 수정 2회 후 남음 | HUMAN_DECISION_REQUIRED | STOP: 운영 규칙 11번 |
-| 사람이 결정해야 한다는 명시적 리뷰 | HUMAN_DECISION_REQUIRED | STOP: 운영 규칙의 12가지 사유만 요청 |
-| 실물 증거가 필요하다는 명시적 리뷰 | PHYSICAL_TEST_REQUIRED | STOP: 관찰 방법과 기대 결과 전달 |
+실물 미검증 항목마다 item, merge_blocker, observation, expected_result와 실제 증거 링크를 기록한다.
+MVP 필수 실물 시험을 소프트웨어 PASS로 대신하지 않는다. 이번 변경의 merge blocker가 아닌
+실물 항목은 미검증으로 계속 남기면서 소프트웨어 판단은 진행할 수 있다.
+레이저는 현 MVP 밖이며 시험 분류가 사용 허가를 뜻하지 않는다.
 
-수정 한도 초과 판정은 미분류 항목의 REVIEW보다 우선한다. 2회를 이미 사용해도 새 리뷰가
-PASS이면 소프트웨어 Gate는 PASS가 가능하다. 일반 기술 선택을 사람에게 되묻지 않는다.
-리뷰 schema의 미검증 항목에는 종류 필드가 없으므로 자연어 키워드로 사람/실물 승인을 추측하지
-않는다. 원래 리뷰의 명시적 HUMAN/PHYSICAL 상태를 보존하고 애매한 CHANGES는 REVIEW로 돌린다.
-사람 판단이 필요하면 [운영 규칙](operating-policy.md)의 HUMAN_* 형식만 사용한다.
-
-실제 FPS·검출 품질·servo 방향/jitter·Pan/Tilt limit·Serial·physical tracking·laser calibration은
-모의 시험으로 완료 처리하지 않는다. 리뷰의 모든 미검증 항목과 `merge_blocker`, `observation`,
-`expected_result`를 출력에 보존한다. 실물 미검증이 병합 조건인지 요구사항에서 판단하고, 필요한
-사용자 승인/관찰 후 새 독립 리뷰에서 증거를 평가한다. 승인 문자열이나 우회 플래그로 지우지 않는다.
-레이저는 현 MVP 밖이며 이 분류는 활성화 승인이 아니다.
-
-driver는 게시 완료 후 Gate를 호출하고 `artifacts/local-pipeline/<실행>/decision.json`에
-[schema](../../schemas/decision-gate.schema.json)를 만족하는 판정을 기록한다. 전체 review bundle의
-SHA-256, base/head/CI attempt/게시 run, 영구 수정 횟수를 포함한다. hash는 원본 연결용이며
-AI 실행의 암호학적 증명이 아니다. CLI 단독 실행은 JSON만 출력한다. PASS만 exit 0이다.
-
-이 결과는 판단 시점의 기록이다. GitHub 상태가 바뀌면 재실행해야 한다. Phase 8에는 merge
-명령, 서버 `decision-gate` 필수 check, 자동 병합 활성화가 없다. Phase 9에서 서버 게시와
-병합 직전 증거 재검증을 구축하기 전에는 이 JSON을 병합 허가로 사용하지 않는다.
-현 단계에 새로운 Secret·권한·GitHub UI 설정·API 비용은 없다.
-
-Phase 9의 별도 서버 게시·조건부 병합 준비는 [병합 계약](auto-merge.md)을 따른다.
-위 내용은 Phase 8 Gate 자체의 역할이다. Gate는 Phase 9에서도 병합을 실행하지 않으며,
-별도 병합기가 모든 최신 증거·설정·보호 조건을 다시 검증해야 한다.
+PASS는 현재 증거에 대한 판단이다. 병합 권한이나 재사용 가능한 토큰이 아니다.
+병합 담당 Codex는 실행 직전에 증거를 다시 확인한다.

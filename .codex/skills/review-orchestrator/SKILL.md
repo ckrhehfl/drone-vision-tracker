@@ -29,3 +29,7 @@ PASS, CHANGES_REQUESTED, HUMAN_DECISION_REQUIRED, PHYSICAL_TEST_REQUIRED를 구�
 독립 scope JSON은 `tools.review merge`로 합친다. 모든 scope가 있어야 하며 다른 SHA는 거부한다.
 정확히 같은 finding만 제거한다. 비슷해 보인다는 이유로 다른 문제를 누락하지 않는다.
 결과가 길면 artifact에 전부 보존하며 요약만으로 판정하지 않는다.
+각 사용자의 기존 Codex 인증으로 새 독립 세션에서 실행한다. 소유자 전용 실행기나 게시기는 필요 없다.
+reviewer는 JSON을 반환하고, orchestrator가 저장·검증·PR 게시를 담당한다.
+CI PASS 문자열만 믿지 말고 최신 실행/attempt와 실제 검사 단계 성공을 확인한다.
+세션 식별과 전체 결과를 남긴다. 이 절차는 스킬 계약이며 GitHub 필수 AI status가 아니다.
