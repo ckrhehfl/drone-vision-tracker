@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "stage": "bounded_local_fix_validation",
+  "stage": "local_decision_gate_validation",
   "review_backend": "local_chatgpt_subscription",
   "paid_api_enabled": false,
   "external_review_enabled": false,

@@ -7,7 +7,8 @@ PR #5와 v1.1 PR #6은 CI/독립 리뷰 PASS 후 병합했다. 원본 v1.1 폴�
 PR #4도 승인된 추가 1회 보완, CI 250 passed/1 skipped, 독립 리뷰 3개 범위 PASS 후 병합했다.
 PR #7은 driver/활성화 준비를 검증해 병합했다. PR #8은 실제 Fixer 1회 → 새 CI → 새 리뷰 PASS를
 확인한 뒤 병합 없이 닫았다. 운영 최대 2회와 승인된 main에서만 실행하는 경계를 유지한다.
-현재 auto_fix_enabled=true, auto_merge_enabled=false다. 다음 작업은 Phase 8 Decision Gate다.
+현재 auto_fix_enabled=true, auto_merge_enabled=false다. Phase 8 로컬 Decision Gate를 구축한다.
+CI/독립 리뷰 통합 후 실제 PR 검증까지 해야 완료다. [Gate 계약](decision-gate.md)을 따른다.
 
 ## Phase 1 감사
 
@@ -51,7 +52,7 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 ## 현재 경계
 
 유료 API, 자동 Merge는 비활성이다. 로컬 구독 리뷰와 Actions 결과 게시를 검증했다.
-자동 Fix는 `bounded_local_fix_validation` 단계의 승인된 main에서만 최대 2회 실행한다.
+자동 Fix는 승인된 main에서만 최대 2회 실행한다. Phase 8 설정은 `local_decision_gate_validation`이다.
 기존 ChatGPT 구독 사용은 사용자 선택이며 새 비용·Secret·권한 승인을 추정하지 않는다.
 기존 문서의 수동 병합 원칙은 이번 사용자 요청에 따라 **9단계 검증 완료 후에만**
 조건부 자동 병합으로 확장한다. 하드웨어와 MVP 요구사항은 바뀌지 않는다.

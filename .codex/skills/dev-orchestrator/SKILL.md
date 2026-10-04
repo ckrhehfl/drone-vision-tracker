@@ -16,6 +16,9 @@ README → 설계 → 결정 기록 → AGENTS 순으로 요구사항과 완료 
 단계 6 검증 전에는 자동 수정 권한을 활성화하지 않는다.
 승인된 깨끗한 main checkout에서 `python -m tools.local_pipeline --pr <번호> --head <SHA>`로
 최신 CI 대기 → 독립 리뷰 → 전체 결과 게시를 연결한다. 설정이 허용한 때만 Fixer를 호출한다.
+게시 후 Decision Gate가 현재 증거를 재검증한다. `next_action=REVIEW`면 필수 미검증 항목을
+독립 reviewer가 명확히 분류하도록 하고, FIX/STOP/PASS 판정을 자의적으로 바꾸지 않는다.
+Phase 8의 PASS는 병합 허가가 아니다. Auto Merge는 Phase 9 검증 전까지 꺼 둔다.
 `BUILDER_CI_FIX_REQUIRED`는 사람 결정이 아니다. CI 로그로 일반 오류를 수정하고 새 SHA로
 다시 실행한다. 이미 Fixer 시도를 사용한 PR에서는 이 경로로 2회 한도를 우회하지 않는다.
 timeout/인증/게시 오류는 PASS가 아니다. 기술 오류를 해결한 뒤 현재 SHA의 증거로 재개한다.

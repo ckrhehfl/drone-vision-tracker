@@ -18,4 +18,11 @@ physical tracking response, laser calibration은 PHYSICAL_TEST_REQUIRED다.
 Phase 9 활성화 후에만 최신 CI PASS + 최신 Review PASS + blocking 0 + Decision PASS +
 미해결 사람 결정 없음 + blocker 실물 시험 완료를 병합 조건으로 인정한다.
 누락/실패/취소/skip/stale/서로 다른 SHA는 PASS가 아니다.
-현재는 Gate/Merge 실행 권한과 자동화가 활성화되지 않았으므로 판단 지침만 제공한다.
+승인된 깨끗한 최신 main에서 `python -m tools.decision_gate --directory <리뷰 폴더>
+--publication-run <게시 run ID>`를 실행한다. 최신 CI, 전체 게시 artifact/status와 로컬 영구
+수정 횟수를 재검증한다. 출력 JSON은 판단 시점의 기록이며 재사용 가능한 병합 허가가 아니다.
+`tools.local_pipeline`도 게시 후 이 Gate를 호출하며 `decision.json`을 남긴다.
+FIX는 남은 한도 내 일반 수정, REVIEW는 미검증 blocker의 분류를 reviewer에게 돌려보내는
+경로다. 모호한 항목을 임의로 사람/실물 승인으로 추정하지 않는다. STOP이면 해당 gate를 따른다.
+관찰 방법/기대 결과를 그대로 전달하고 승인받은 실물 시험 이후 새 리뷰로 미검증 상태를 갱신한다.
+Phase 8에는 merge 기능·서버 decision-gate status가 없다. Auto Merge는 Phase 9까지 비활성이다.
