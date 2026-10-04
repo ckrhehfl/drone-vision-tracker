@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Local Phase 8 decision snapshot, never merge authorization",
+  "title": "Decision snapshot; the gate never executes or independently authorizes merge",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "context", "publication_run", "bundle_sha256", "review_status", "status", "next_action", "reason", "blocking_findings", "non_blocking_findings", "fix_attempts", "max_auto_fix_attempts", "unverified_items", "merge"],

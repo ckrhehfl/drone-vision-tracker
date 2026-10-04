@@ -12,7 +12,13 @@ PR #7은 driver/활성화 준비를 검증해 병합했다. PR #8은 실제 Fixe
 PR #10의 CI/독립 리뷰 PASS 후 통합했다. [Gate 계약](decision-gate.md)과
 [실제 PR 검증 기록](decision-gate-verification.md)을 따른다. PR #11 최초 검증 head에서
 CI → 독립 리뷰 → 전체 게시 대조 → Gate PASS와 변조된 증거 4종 거부, 저장소/ledger 불변을 확인했다.
-현재 문서 head의 최신 결과는 PR #11에 연결한다. 다음 작업은 Phase 9이며 운영 Auto Merge는 꺼져 있다.
+현재 문서 head의 최신 결과는 PR #11에 연결한다.
+
+Phase 9 준비: 사용자 A 승인(D25)으로 현재 협업자 3명과 소유자의 요청을 소유자 PC 한 대에서
+처리하는 접수/영구 중복 방지, 서버 Gate 게시, 별도 조건부 병합기를 구현한다.
+[협업자 안내](collaborators.md)와 [검증 순서](auto-merge.md)를 따른다.
+운영 Auto Merge와 주기 접수 실행은 아직 꺼져 있다. 서버 필수 검사는 기존 CI/리뷰 2개이며,
+실제 Gate 게시 확인 후 3개로 늘린다. 실제 협업자 계정에서의 UI 실행은 아직 확인하지 않았다.
 
 ## Phase 1 감사
 
