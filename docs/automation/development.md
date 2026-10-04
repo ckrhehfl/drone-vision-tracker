@@ -115,6 +115,27 @@ OpenAI 공식 문서는 ChatGPT auth.json을 CI로 옮기는 인증 절차를 �
 실제 PASS/합성 실패/이전 SHA 거부/새 SHA 재리뷰 증거는 [구축 상태](setup-status.md)에 기록했다.
 Phase 7 준비 도구와 아직 승인·검증이 필요한 사항은 [Fixer 준비안](fixer-activation.md)을 따른다.
 
+## 로컬 단계 연결
+
+```powershell
+.venv/Scripts/python -m tools.local_pipeline --pr <PR-번호> --head <현재-40자리-SHA>
+```
+
+승인된 깨끗한 최신 main에서 실행한다. 기본 15분 한도로 CI/결과 게시를 기다리고,
+같은 SHA의 최신 CI가 성공한 때만 새 리뷰를 실행한다. 게시 artifact 전체 JSON, 실행 주체,
+기본 브랜치 SHA, commit status와 현재 CI가 일치해야 다음 단계로 진행한다.
+이번 단계는 auto_fix_enabled=true 설정을 승인된 main에 통합한 뒤 실제 PR에서 검증한다.
+PR head의 설정 변경만으로는 활성화하지 않는다. false인 경우 finding 게시 뒤 수정 없이 종료한다.
+승인된 main의 true 설정에서만 PR당 영구 최대 2회 Fixer를 호출한다.
+수정 후에는 새 SHA의 CI와 새 독립 리뷰를 반드시 반복한다. 이 도구에는 merge 기능이 없다.
+
+CI 실패는 `BUILDER_CI_FIX_REQUIRED`로 현재 Builder에게 넘긴다. 사람의 테스트 판단을
+요청하지 않으며 Builder가 로그와 실패 테스트를 고친다. Fixer를 이미 사용한 PR에서 이
+표시를 이용해 수정 횟수를 초기화하거나 한도를 넘겨 수정하지 않는다. 제한 초과는 사람 gate다.
+인증/한도/timeout/외부 SHA 변경/게시 실패는 예외로 중단하며 유료 fallback이나 자동 재시도가 없다.
+CLI 결과 JSON의 PASS는 소프트웨어 리뷰 단계 완료이고 Decision Gate/실물/병합 완료가 아니다.
+PC가 켜져 있고 이 로컬 명령이 실행 중이어야 한다. GitHub runner에는 구독 인증을 배포하지 않는다.
+
 ## 공식 근거
 
 - [Codex 인증](https://learn.chatgpt.com/docs/auth): ChatGPT 구독 인증과 API 과금 인증의 구분.

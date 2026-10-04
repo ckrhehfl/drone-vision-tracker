@@ -218,7 +218,7 @@ def run_scope(command, prompt, environment, log, timeout=1200, cwd=None):
         )
 
 
-def run_review(run_id):
+def run_review(run_id, output_directory=None):
     if os.environ.get("GITHUB_ACTIONS"):
         raise ValueError("ChatGPT account review must run locally, never on this public CI runner")
     executable = shutil.which("codex")
@@ -231,7 +231,11 @@ def run_review(run_id):
     # Unique output directories prevent reuse of partial results from an earlier attempt.
     artifacts = ROOT / "artifacts/subscription-review"
     artifacts.mkdir(parents=True, exist_ok=True)
-    output = Path(tempfile.mkdtemp(prefix=context["head"][:12] + "-", dir=artifacts))
+    if output_directory is None:
+        output = Path(tempfile.mkdtemp(prefix=context["head"][:12] + "-", dir=artifacts))
+    else:
+        output = Path(output_directory)
+        output.mkdir(parents=True, exist_ok=False)
     write_json(output / "context.json", context)
     write_json(output / "plan.json", plan)
     schema = ROOT / "schemas/review.schema.json"

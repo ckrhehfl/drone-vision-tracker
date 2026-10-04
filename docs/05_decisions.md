@@ -76,3 +76,11 @@ Builder 보완을 승인한다. 최신 main/v1.1 통합 후 새 SHA의 CI와 독
 이전 보완 횟수는 보존하며 운영 MAX_AUTO_FIX_ATTEMPTS=2, Auto Fix/Auto Merge 비활성,
 하드웨어·비용·Secret·권한 경계는 바꾸지 않는다. 추가 보완 후에도 blocker가 남으면 다시 중단한다.
 승인자: 저장소 사용자(2026-10-04, "그래 A").
+
+2026-10-04 D23: PR #4 병합 후 사용자가 "그래 다음진행해줘"로 실제 Fix→CI→독립 재리뷰
+검증 진행을 요청했다. 기존 로컬 Git/ChatGPT 권한으로 유한 driver와 제한된 Fixer 활성화
+설정을 구현·독립 리뷰하고 main 통합 후 작은 비하드웨어 검증 PR에서 실행한다.
+신규 Secret·API 요금·Actions contents write·계정 권한은 추가하지 않는다.
+의도적으로 넣은 소프트웨어 검증용 결함과 실제 AI finding을 구분해 기록하고, 검증 후 해당 PR은
+닫는다. 운영 수정 한도는 PR당 2회이며 Decision Gate/Auto Merge는 후속 단계까지 비활성이다.
+승인자: 저장소 사용자. 기존 카메라·학습·2축·실물 안전 요구사항은 변경하지 않는다.

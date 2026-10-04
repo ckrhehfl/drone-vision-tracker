@@ -181,11 +181,11 @@ CALIBRATION_SCHEMA = object_schema(
 AUTOMATION_SCHEMA = object_schema(
     {
         "schema_version": constant(1),
-        "stage": constant("read_only_review_setup"),
+        "stage": constant("bounded_local_fix_validation"),
         "review_backend": constant("local_chatgpt_subscription"),
         "paid_api_enabled": FALSE,
         "external_review_enabled": FALSE,
-        "auto_fix_enabled": FALSE,
+        "auto_fix_enabled": {"type": "boolean"},
         "auto_merge_enabled": FALSE,
         "max_auto_fix_attempts": constant(2),
     }
@@ -209,7 +209,7 @@ def main():
     Draft202012Validator(AUTOMATION_SCHEMA).validate(
         strict_json((ROOT / "config/automation.json").read_text(encoding="utf-8"))
     )
-    print("PASS: offline examples and disabled automation configuration")
+    print("PASS: offline examples and bounded local automation configuration")
 
 
 if __name__ == "__main__":

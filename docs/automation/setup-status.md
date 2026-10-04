@@ -2,11 +2,11 @@
 
 갱신일: 2026-10-04. 아래 이전 날짜의 기록은 당시 상태이며 최신 상태는 이 요약을 따른다.
 
-현재: Phase 6 실제 검증 완료. main의 Auto Fix/Auto Merge 설정은 false다.
+현재: Phase 6 실제 검증 완료. Phase 7은 제한된 Fixer/로컬 driver의 실제 PR 검증 단계다.
 PR #5와 v1.1 PR #6은 CI/독립 리뷰 PASS 후 병합했다. 원본 v1.1 폴더는 백업 대조 후 삭제했다.
-PR #4는 두 차례 보완 뒤 blocking 1건으로 중단했으나 사용자가 A를 선택해 추가 1회만 승인했다.
-아래 D22 예외로 준비 코드를 보완하며, 운영 PR당 최대 2회와 비활성 설정은 유지한다.
-자동 Fix/Decision Gate/Auto Merge의 전체 무인 운용은 아직 활성화하지 않았다.
+PR #4도 승인된 추가 1회 보완, CI 250 passed/1 skipped, 독립 리뷰 3개 범위 PASS 후 병합했다.
+운영 PR당 최대 2회를 유지하며 실제 Fixer 실행 증거는 아래 후속 검증 기록으로 구분한다.
+설정 변경이 승인된 main에 통합된 뒤에만 Fixer를 실행한다. Decision Gate/Auto Merge는 비활성이다.
 
 ## Phase 1 감사
 
@@ -49,7 +49,8 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 
 ## 현재 경계
 
-유료 API, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰와 Actions 결과 게시를 검증했다.
+유료 API, 자동 Merge는 비활성이다. 로컬 구독 리뷰와 Actions 결과 게시를 검증했다.
+자동 Fix는 `bounded_local_fix_validation` 단계의 승인된 main에서만 최대 2회 실행한다.
 기존 ChatGPT 구독 사용은 사용자 선택이며 새 비용·Secret·권한 승인을 추정하지 않는다.
 기존 문서의 수동 병합 원칙은 이번 사용자 요청에 따라 **9단계 검증 완료 후에만**
 조건부 자동 병합으로 확장한다. 하드웨어와 MVP 요구사항은 바뀌지 않는다.
@@ -197,3 +198,21 @@ staged/untracked 새 테스트의 실패 경로와 기존 승인 skip 테스트 
 동적인 모든 테스트 실행 경로를 정적 검사로 증명하지는 않으며 새 독립 리뷰가 계속 필요하다.
 이번 head의 CI·리뷰·병합 결과는 [PR #4](https://github.com/ckrhehfl/drone-vision-tracker/pull/4)에
 SHA와 함께 게시한다. 이전 170 tests 결과를 새 통합 head의 증거로 사용하지 않는다.
+
+## Phase 7 단계 연결과 제한된 활성화
+
+`tools.local_pipeline`에 CI 대기, 새 독립 리뷰, 전체 JSON 게시/다운로드 대조,
+설정이 허용한 Fixer 및 새 SHA 재검증 순서를 연결한다. auto_fix만 true로 전환할 준비다.
+이 변경의 CI·독립 리뷰를 확인하고 main에 통합한 뒤에만 활성화된다. auto_merge는 계속 false다.
+프로세스 재개 시에도 PR별 ledger 한도를 유지하고 CI 실패는 Builder에 넘긴다.
+현재는 모의 state-machine 검증 단계이며 실제 PR 자동 수정 검증 완료를 뜻하지 않는다.
+
+2026-10-04: PR #4 head `07acc82`의 [CI 37191906899](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/37191906899)
+250 passed/1 skipped, 독립 3개 범위 PASS/지적 0, [게시 37192343330](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/37192343330)
+artifact 원본 일치를 확인하고 main `f37bdd2`로 병합했다. 사용자가 다음 단계 진행을 요청했다.
+기존 미게시 `1d4662f`는 보존하고 driver 변경만 최신 main 기반 `codex/local-development-loop`로
+가져왔다. PR #4의 모든 검사 보완, PR #5 학습 도구와 v1.1을 유지한다.
+새 driver PR을 CI/독립 리뷰로 통합한 뒤 실물과 무관한 검증 PR에서 실제 reviewer finding →
+Fix → 새 SHA CI → 새 독립 리뷰를 시험한다. 의도적으로 넣은 검증용 결함은 실제 제품 결함과
+구분하며 JSON finding을 사람이 만들어 실제 AI 검출로 표시하지 않는다. 검증 PR은 완료 후
+닫고, 하드웨어 기능이나 검증용 결함을 main에 병합하지 않는다.
