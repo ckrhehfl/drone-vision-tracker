@@ -2,11 +2,12 @@
 
 갱신일: 2026-10-04. 아래 이전 날짜의 기록은 당시 상태이며 최신 상태는 이 요약을 따른다.
 
-현재: Phase 6 실제 검증 완료. Phase 7은 제한된 Fixer/로컬 driver의 실제 PR 검증 단계다.
+현재: Phase 6과 Phase 7의 제한된 실제 PR 검증 완료. [Phase 7 증거](fix-dry-run.md)를 따른다.
 PR #5와 v1.1 PR #6은 CI/독립 리뷰 PASS 후 병합했다. 원본 v1.1 폴더는 백업 대조 후 삭제했다.
 PR #4도 승인된 추가 1회 보완, CI 250 passed/1 skipped, 독립 리뷰 3개 범위 PASS 후 병합했다.
-운영 PR당 최대 2회를 유지하며 실제 Fixer 실행 증거는 아래 후속 검증 기록으로 구분한다.
-설정 변경이 승인된 main에 통합된 뒤에만 Fixer를 실행한다. Decision Gate/Auto Merge는 비활성이다.
+PR #7은 driver/활성화 준비를 검증해 병합했다. PR #8은 실제 Fixer 1회 → 새 CI → 새 리뷰 PASS를
+확인한 뒤 병합 없이 닫았다. 운영 최대 2회와 승인된 main에서만 실행하는 경계를 유지한다.
+현재 auto_fix_enabled=true, auto_merge_enabled=false다. 다음 작업은 Phase 8 Decision Gate다.
 
 ## Phase 1 감사
 
@@ -216,3 +217,14 @@ artifact 원본 일치를 확인하고 main `f37bdd2`로 병합했다. 사용자
 Fix → 새 SHA CI → 새 독립 리뷰를 시험한다. 의도적으로 넣은 검증용 결함은 실제 제품 결함과
 구분하며 JSON finding을 사람이 만들어 실제 AI 검출로 표시하지 않는다. 검증 PR은 완료 후
 닫고, 하드웨어 기능이나 검증용 결함을 main에 병합하지 않는다.
+
+## Phase 7 실제 검증 완료 — 2026-10-04
+
+준비 [PR #7](https://github.com/ckrhehfl/drone-vision-tracker/pull/7)을 main `25f7b90`으로
+통합한 뒤 [PR #8](https://github.com/ckrhehfl/drone-vision-tracker/pull/8)의 의도적인 비하드웨어
+시험 결함을 실제 독립 reviewer가 발견했다. driver가 결과 게시/원본 대조를 확인하고 별도
+Fixer를 1회 실행했다. 허용된 코드와 새 테스트만 바꾸었으며 기존 테스트는 보존했다.
+새 head `21ed320`의 sandbox 로컬 검사와 GitHub CI는 294 passed/1 skipped,
+새 독립 리뷰/게시 결과는 PASS/지적 0이었다. 사용 횟수 1회는 영구 ledger에 남아 있다.
+PR #8은 닫았고 검증 코드는 main에 병합하지 않았다. [전체 증거와 한계](fix-dry-run.md)를 참조한다.
+이 완료는 Phase 8/9나 드론 실물 기능 완료가 아니다. 새 Secret·권한·API 비용은 없다.
