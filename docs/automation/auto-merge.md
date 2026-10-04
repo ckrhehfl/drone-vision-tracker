@@ -1,7 +1,10 @@
 # Phase 9 — 검증 후 조건부 병합
 
-승인: D25. 준비 설정은 `collaborative_merge_validation`, `auto_merge_enabled=false`다.
-이 문서와 병합 구현이 존재하는 것만으로 활성화된 것이 아니다.
+승인: D25. 준비 단계와 PR #13 실제 검증에서는 `collaborative_merge_validation`,
+`auto_merge_enabled=false`를 유지했다. [실제 증거](merge-verification.md)를 확인한 뒤
+별도 활성화 PR에서 `conditional_auto_merge`, `auto_merge_enabled=true`로 전환한다.
+활성화 PR이 검증되어 main에 통합되기 전에는 실행기의 승인 설정이 바뀌지 않는다.
+운영 단계에서도 `auto_merge_enabled=false`로 긴급 중단할 수 있다.
 
 1. 접수/게시/병합 준비 구현을 CI·새 독립 리뷰로 통합한다.
 2. 작은 비하드웨어 PR에서 Automation Request → 로컬 실행기 → CI/리뷰 → 서버 Gate 게시를

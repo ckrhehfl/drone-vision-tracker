@@ -8,17 +8,20 @@ PR #5와 v1.1 PR #6은 CI/독립 리뷰 PASS 후 병합했다. 원본 v1.1 폴�
 PR #4도 승인된 추가 1회 보완, CI 250 passed/1 skipped, 독립 리뷰 3개 범위 PASS 후 병합했다.
 PR #7은 driver/활성화 준비를 검증해 병합했다. PR #8은 실제 Fixer 1회 → 새 CI → 새 리뷰 PASS를
 확인한 뒤 병합 없이 닫았다. 운영 최대 2회와 승인된 main에서만 실행하는 경계를 유지한다.
-현재 auto_fix_enabled=true, auto_merge_enabled=false다. Phase 8 로컬 Decision Gate 구현을
+Phase 8 당시 auto_fix_enabled=true, auto_merge_enabled=false였다. 로컬 Decision Gate 구현을
 PR #10의 CI/독립 리뷰 PASS 후 통합했다. [Gate 계약](decision-gate.md)과
 [실제 PR 검증 기록](decision-gate-verification.md)을 따른다. PR #11 최초 검증 head에서
 CI → 독립 리뷰 → 전체 게시 대조 → Gate PASS와 변조된 증거 4종 거부, 저장소/ledger 불변을 확인했다.
 현재 문서 head의 최신 결과는 PR #11에 연결한다.
 
-Phase 9 준비: 사용자 A 승인(D25)으로 현재 협업자 3명과 소유자의 요청을 소유자 PC 한 대에서
-처리하는 접수/영구 중복 방지, 서버 Gate 게시, 별도 조건부 병합기를 구현한다.
+Phase 9: 사용자 A 승인(D25)으로 현재 협업자 3명과 소유자의 요청을 소유자 PC 한 대에서
+처리하는 접수/영구 중복 방지, 서버 Gate 게시, 별도 조건부 병합기를 PR #12에서 검증·통합했다.
 [협업자 안내](collaborators.md)와 [검증 순서](auto-merge.md)를 따른다.
-운영 Auto Merge와 주기 접수 실행은 아직 꺼져 있다. 서버 필수 검사는 기존 CI/리뷰 2개이며,
-실제 Gate 게시 확인 후 3개로 늘린다. 실제 협업자 계정에서의 UI 실행은 아직 확인하지 않았다.
+PR #13 실제 접수 → CI → 독립 리뷰 → 서버 Gate PASS 및 중복/보호 누락/활성화 전 병합 거부를
+검증했다. main의 필수 검사는 CI/리뷰/Gate 3개이며 Actions app 15368, strict/admin 적용이다.
+[실제 증거](merge-verification.md)를 기록했다. 별도 활성화 PR의 main 반영 시점부터
+auto_fix_enabled=true, auto_merge_enabled=true다. 다음은 작은 PR의 실제 조건부 병합과
+주기 접수 설정이다. 주기 실행과 다른 협업자 세 명의 직접 UI 실행은 아직 확인하지 않았다.
 
 ## Phase 1 감사
 

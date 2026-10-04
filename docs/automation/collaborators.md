@@ -1,7 +1,8 @@
 # 협업자의 자동 리뷰·병합 요청
 
-현재는 Phase 9 검증 준비 단계이며 **자동 병합은 꺼져 있다**.
-활성화와 실제 검증 결과는 [구축 상태](setup-status.md)를 따른다.
+승인된 main의 `conditional_auto_merge` 설정에서 조건부 자동 병합을 사용한다.
+실제 접수/Gate 검증과 활성화 결과는 [구축 상태](setup-status.md)를 따른다.
+주기 접수 확인은 아직 설정 전이며, 설정 전에는 소유자의 로컬 실행으로 처리한다.
 
 허용 사용자: `ckrhehfl`, `ljwoo8942`, `chika-breeki`, `ddoss2414-max`.
 계정 이름과 GitHub 계정 ID, 현재 저장소 쓰기 권한을 모두 검사한다.

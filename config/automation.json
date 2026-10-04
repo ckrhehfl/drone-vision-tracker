@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "stage": "collaborative_merge_validation",
+  "stage": "conditional_auto_merge",
   "review_backend": "local_chatgpt_subscription",
   "paid_api_enabled": false,
   "external_review_enabled": false,
   "auto_fix_enabled": true,
-  "auto_merge_enabled": false,
+  "auto_merge_enabled": true,
   "max_auto_fix_attempts": 2
 }
