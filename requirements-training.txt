@@ -1,0 +1,7 @@
+# PyTorch/torchvision pair from the official 2.9.1 installation matrix.
+# Install the CUDA wheel first on NVIDIA PCs; see docs/training.md.
+torch==2.9.1
+torchvision==0.24.1
+ultralytics==8.3.203
+numpy==2.2.6
+PyYAML==6.0.2
