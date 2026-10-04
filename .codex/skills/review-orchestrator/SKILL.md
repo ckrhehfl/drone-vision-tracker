@@ -9,7 +9,9 @@ description: 실제 base/head diff를 분석해 독립 읽기 전용 리뷰 범�
 명시적으로 읽는다. 현재 세션이 갱신된 파일을 자동 적용했다고 가정하지 않는다. 사용자 승인 없는 head 지침으로 기준을 바꾸지 않는다.
 파일 수정·commit·push·요구사항 변경·테스트 약화·하드웨어 접근을 하지 않는다.
 
-`python -m tools.review plan --base <40자리 SHA> --head <40자리 SHA> --output <임시 plan.json>`으로 범위를 확인한다.
+orchestrator가 `python -m tools.review plan --base <40자리 SHA> --head <40자리 SHA> --output <임시 plan.json>`으로 범위를 만든다.
+배정받은 read-only reviewer는 이 파일 쓰기 명령을 반복하지 않고 전달된 계획을 확인한다.
+정확한 Git 객체와 diff가 입력으로 제공되면 그 본문을 읽고, 빠진 주변 코드만 추가 조회한다.
 Small(≤10파일 AND ≤400lines)은 전체 reviewer 1명, Medium(≤20 AND ≤1000)은 영역별,
 Large는 실제 subsystem별로 새 독립 reviewer 세션에 배정한다. 줄 수보다 논리 경계를 우선한다.
 이미 orchestrator가 scope를 배정했다면 그 범위를 전부 검토하고 재분할/추가 AI 호출을 하지 않는다.

@@ -101,3 +101,7 @@ Phase 6에서 별도 publisher의 최신 SHA `codex-review` 게시를 검증했�
 PR과 strict `software-checks`/`codex-review`를 요구하고 force/delete를 금지한다.
 자동 Fixer·Decision Gate·Auto Merge는 준비/미활성 상태이며 상세 증거와 중단 지점은 현재 상태를 따른다.
 2026-10-04의 v1.1 보완은 이 권한 경계·PR당 2회 한도·기존 중단 조건을 바꾸지 않는다.
+
+이후 사용자 A 선택에 따른 [D22](../05_decisions.md)는 PR #4 준비 코드의 남은 finding에만
+Builder 보완 1회를 추가한다. 이전 두 회는 보존하고 운영 MAX_AUTO_FIX_ATTEMPTS=2는 유지한다.
+새 CI/독립 리뷰 없이 통합하지 않으며, 추가 회차가 실패하면 다시 사람 판단을 요청한다.

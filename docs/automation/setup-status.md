@@ -3,8 +3,10 @@
 갱신일: 2026-10-04. 아래 이전 날짜의 기록은 당시 상태이며 최신 상태는 이 요약을 따른다.
 
 현재: Phase 6 실제 검증 완료. main의 Auto Fix/Auto Merge 설정은 false다.
-PR #4는 두 차례 보완 뒤 blocking 1건으로 중단했고, 추가 수정 승인을 받기 전에는 진행하지 않는다.
-v1.1 문서 반영과 PR #5 검토는 이 한도를 우회하는 Fixer 작업이 아니다.
+PR #5와 v1.1 PR #6은 CI/독립 리뷰 PASS 후 병합했다. 원본 v1.1 폴더는 백업 대조 후 삭제했다.
+PR #4는 두 차례 보완 뒤 blocking 1건으로 중단했으나 사용자가 A를 선택해 추가 1회만 승인했다.
+아래 D22 예외로 준비 코드를 보완하며, 운영 PR당 최대 2회와 비활성 설정은 유지한다.
+자동 Fix/Decision Gate/Auto Merge의 전체 무인 운용은 아직 활성화하지 않았다.
 
 ## Phase 1 감사
 
@@ -47,7 +49,7 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 
 ## 현재 경계
 
-유료 API, 무인 리뷰 연결, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰 검증을 준비했다.
+유료 API, 자동 Fix, 자동 Merge는 비활성이다. 로컬 구독 리뷰와 Actions 결과 게시를 검증했다.
 기존 ChatGPT 구독 사용은 사용자 선택이며 새 비용·Secret·권한 승인을 추정하지 않는다.
 기존 문서의 수동 병합 원칙은 이번 사용자 요청에 따라 **9단계 검증 완료 후에만**
 조건부 자동 병합으로 확장한다. 하드웨어와 MVP 요구사항은 바뀌지 않는다.
@@ -109,6 +111,50 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
   CLI 진단 로그·구독 인증 파일·head 코드 실행은 전달하지 않는다.
 - 작은 PR을 이용한 실제 Actions 전달/성공/실패/새 SHA 검증 후 Phase 6 완료를 기록한다.
 
+## Phase 6 실제 검증 완료 — 2026-10-01
+
+결과 게시 [PR #2](https://github.com/ckrhehfl/drone-vision-tracker/pull/2)는 CI 134 tests,
+독립 2개 scope PASS/blocking 0 확인 후 `35e23af`로 통합했다. 승인 내용이 reviewer에
+누락된 것과 잘못된 문서 행 지적은 실제 사용자 승인/파일을 제공한 독립 재검토에서 해소했다.
+이 과정에서 이미 허용한 statuses 권한을 사용자에게 다시 요청하지 않았다.
+
+작은 문서 [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)로 다음을 확인했다.
+
+| 시험 | SHA / Actions run | 결과 |
+|---|---|---|
+| 최초 CI | `e5c27e6` / [36746109069](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746109069) | 134 tests PASS |
+| 실제 구독 리뷰 게시 | `e5c27e6` / [36746369366](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746369366) | PASS, blocker 0, 전체 artifact 원본 일치 |
+| 합성 실패 fixture | `e5c27e6` / [36746512500](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746512500) | CHANGES_REQUESTED, blocker 1, 실패 status, 전체 finding 보존 |
+| 새 head에 이전 JSON 제출 | `ac5c31c` / [36746720558](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746720558) | 검증 실패, 게시 skip, 새 head status 없음 |
+| 최신 CI | `ac5c31c` / [36746672087](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746672087) | 134 tests PASS |
+| 새 독립 리뷰 게시 | `ac5c31c` / [36747003424](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36747003424) | PASS, blocker 0, 전체 artifact 원본 일치 |
+
+`ac5c31cd985e334f934ca4684520c1b71192dc4b`의 실제 리뷰는 새 세션이며 clone 불변성 증거를
+검증했다. 합성 실패 finding은 AI가 찾은 제품 결함이 아니다. 실제 AI finding/수정/재리뷰는
+PR #1에 별도로 기록돼 있다. PR #3은 검증 후 `b9913e6`으로 bootstrap 통합했다.
+이 통합은 운영 자동 병합을 활성화한 것이 아니다. 실물 시험은 모두 미실행이다.
+
+## Phase 7 준비 — 비활성
+
+`tools.auto_fix`와 `tools.fix_attempts`에 최신 finding 검사, PR별 영구 최대 2회 예약,
+별도 수정 세션, 후보 변경 검사, 로컬 CI, feature branch publisher 준비 코드를 추가한다.
+`execute`는 활성화 설정 전에 프로세스·네트워크·시도 예약을 시작하지 않는다.
+[정확한 권한 범위와 미완료 사항](fixer-activation.md)을 따른다. 실제 자동 수정 0회다.
+GitHub Actions contents write, 새로운 Secret, Auto Merge는 변경하지 않았다.
+Windows 쓰기 sandbox의 일회용 파일 작성 시험은 PASS다. 기존 Windows sandbox 선택을
+명시해야 하며 전체 사용자 설정을 다시 로드하거나 sandbox를 우회하지 않는다.
+기존 관리자 권한으로 main 보호를 설정하고 API로 재확인했다. 관리자 포함 PR 필수,
+최신 `software-checks`/`codex-review` 필수(출처 GitHub Actions app 15368), force/delete 금지다.
+사람의 코드 승인 수는 0이며 소스 리뷰를 사용자에게 요구하지 않는다.
+Decision Gate check는 Phase 8 검증 후 추가한다. 현재 운영 Auto Merge는 꺼져 있다.
+준비 코드의 첫 유효 독립 리뷰에서 blocking 3개(Git hook 권한 경계, finding 파일 범위,
+실행되지 않는 assertion)가 확인됐다. Builder가 해당 경계와 회귀 테스트를 보완한다.
+전체 167개 테스트의 Windows command sandbox 실행과 외부 연결 거부를 실제 확인했다.
+이 검사는 실제 PR 자동 수정·push 재트리거 또는 최신 SHA 리뷰 PASS를 대신하지 않는다.
+재리뷰의 원격 branch rewind 경계 finding은 부모가 생성한 pre-push SHA 검사로 보완한다.
+실제 로컬 bare remote 시험에서 rewind/삭제/다른 branch 거부와 정확한 이전 SHA 갱신을 확인한다.
+force push 또는 force-with-lease는 사용하지 않는다.
+
 ## 2026-10-04 확인과 PR 처리 순서
 
 - 최초 확인 main: `b9913e691b5c460336a48200828deb54a0ad18d5`.
@@ -137,3 +183,17 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 - main 보호를 API로 재확인했다: 관리자 포함 PR 필수, strict software-checks/codex-review,
   force/delete 금지. 이번 문서 반영에서 새 Secret·권한·유료 API·GitHub 설정을 추가하지 않는다.
 - 실물 카메라·정확도·Serial·모터·펌웨어·레이저 미실행. SC01–SC08은 관련 런타임 구현 전 계획이다.
+
+## 2026-10-04 PR #4 추가 1회 승인 — D22
+
+사용자가 HUMAN_DECISION_REQUIRED의 A를 선택했다. 이 준비 PR의 남은 skip/xfail 검사
+finding에 한해 Builder 보완을 1회 더 수행하고 새로운 CI와 독립 리뷰를 받는다.
+이전 두 회를 초기화하지 않으며 같은 PR에 자동으로 네 번째 보완을 시작하지 않는다.
+설치된 Fixer의 실제 실행은 여전히 0회이고, 운영 MAX_AUTO_FIX_ATTEMPTS=2는 바꾸지 않는다.
+
+최신 main `464e15b`를 일반 merge해 PR #5 학습 도구와 v1.1을 보존한다. 명시적인
+pytest skip/xfail 직접 import·별칭·와일드카드 및 importorskip를 후보 검사에서 거부하고,
+staged/untracked 새 테스트의 실패 경로와 기존 승인 skip 테스트 불변을 회귀 검사한다.
+동적인 모든 테스트 실행 경로를 정적 검사로 증명하지는 않으며 새 독립 리뷰가 계속 필요하다.
+이번 head의 CI·리뷰·병합 결과는 [PR #4](https://github.com/ckrhehfl/drone-vision-tracker/pull/4)에
+SHA와 함께 게시한다. 이전 170 tests 결과를 새 통합 head의 증거로 사용하지 않는다.
