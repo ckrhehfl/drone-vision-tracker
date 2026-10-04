@@ -1,6 +1,10 @@
 # 자동 개발 시스템 구축 상태
 
-기준일: 2026-09-30. 이번 작업은 자동화 기반 구축이며 드론 기능 구현이 아니다.
+갱신일: 2026-10-04. 아래 이전 날짜의 기록은 당시 상태이며 최신 상태는 이 요약을 따른다.
+
+현재: Phase 6 실제 검증 완료. main의 Auto Fix/Auto Merge 설정은 false다.
+PR #4는 두 차례 보완 뒤 blocking 1건으로 중단했고, 추가 수정 승인을 받기 전에는 진행하지 않는다.
+v1.1 문서 반영과 PR #5 검토는 이 한도를 우회하는 Fixer 작업이 아니다.
 
 ## Phase 1 감사
 
@@ -104,3 +108,32 @@ MVP는 실내 단일 지정 드론의 카메라 추종이며 레이저·요격·
 - 모든 JSON과 증거를 기본 브랜치 코드로 검증한다. 소유자의 main dispatch만 허용하며,
   CLI 진단 로그·구독 인증 파일·head 코드 실행은 전달하지 않는다.
 - 작은 PR을 이용한 실제 Actions 전달/성공/실패/새 SHA 검증 후 Phase 6 완료를 기록한다.
+
+## 2026-10-04 확인과 PR 처리 순서
+
+- 최초 확인 main: `b9913e691b5c460336a48200828deb54a0ad18d5`.
+  PR #5 통합 후 문서 변경의 base는 `0b28a930fef89714cb0779ba24d4a035de713235`다.
+- Phase 6: [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)의 실제 구독 PASS 게시
+  [36746369366](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746369366),
+  명시적 합성 실패 [36746512500](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746512500),
+  stale SHA 거부 [36746720558](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36746720558),
+  새 SHA PASS [36747003424](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/36747003424) 검증 완료.
+- [PR #4](https://github.com/ckrhehfl/drone-vision-tracker/pull/4), head `46727fa`:
+  CI 170 tests PASS, 독립 리뷰 CHANGES_REQUESTED/blocking 1. 직접 import한 pytest skip/xfail을
+  후보 검사에서 놓치는 지적이 남았다. 두 차례 Builder 보완 이후 중단했다. 설치된 Fixer는
+  실행 0회지만 구축 보완에도 같은 2회 중단 기준을 적용했다. 별도 승인 없이 세 번째 보완을 하지 않는다.
+- [PR #5](https://github.com/ckrhehfl/drone-vision-tracker/pull/5): 원래 `14ed93f`의 신규 리뷰에서
+  원본 촬영 출처/시각/검수 해시 누락을 찾아 1회 보완했다. 새 head `4da3f26`은 로컬 및
+  [CI 37189467772](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/37189467772)
+  181 passed/1 skipped, 독립 2개 scope PASS/blocking 0이다. 전체 JSON과
+  [게시 artifact 37189830651](https://github.com/ckrhehfl/drone-vision-tracker/actions/runs/37189830651)
+  일치를 확인하고 `0b28a93`으로 squash 병합했다. 이번 GPU smoke는 미실행이며 기존 GPU 기록과 구분한다.
+- 순서: 학습 PR 통합 뒤 [v1.1 PR #6](https://github.com/ckrhehfl/drone-vision-tracker/pull/6)에
+  최신 main을 일반 merge하여 기존 학습 문서/코드를 보존한다. 새로운 base/head의 CI와 독립 리뷰를
+  확인한 뒤 병합한다. 이전 base의 리뷰를 재사용하지 않으며 운영 Auto Merge 활성화와는 별개다.
+  PR #4는 별도 한도 결정을 기다리며 실패 status를 우회하거나 자동화 설정을 활성화하지 않는다.
+- 미게시 `automation/local-development-loop`의 `1d4662f`는 별도 작업 폴더에 보존했다.
+  main에 통합하지 않았고 활성화 설정도 실행하지 않았다. v1.1로 초기 ZIP 상태를 덮어쓰지 않는다.
+- main 보호를 API로 재확인했다: 관리자 포함 PR 필수, strict software-checks/codex-review,
+  force/delete 금지. 이번 문서 반영에서 새 Secret·권한·유료 API·GitHub 설정을 추가하지 않는다.
+- 실물 카메라·정확도·Serial·모터·펌웨어·레이저 미실행. SC01–SC08은 관련 런타임 구현 전 계획이다.

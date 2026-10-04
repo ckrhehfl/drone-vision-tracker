@@ -13,6 +13,11 @@ base/head의 실제 코드와 테스트에서 다음 실패 조건을 확인한�
 - 실제 observation과 prediction 구분, stale/누락 시 새 이동 중단.
 - 단일 대상 유지, tracking loss·reacquisition·잘못된 target 전환.
 - 촬영 세션별 분할, 파생 데이터 누수, test를 이용한 튜닝.
+- bbox 크기를 검증 없이 m 거리로 보고하거나 입력 60FPS 목표를 실측값으로 보고하는 경로.
+- 사전 고정한 시험 영역 내 놓침/프레임 드롭/추종 실패를 사후 제외하거나 HOLD를 추종 성공으로 집계하는 오류.
+
+v1.1의 단일 카메라·2축 범위를 적용한다. 거리·스테레오·머리 위 무중단 추종의 부재 자체는
+결함이 아니며 [운용 계약](../../../docs/07_single_camera_operating_envelope.md)의 경계 동작은 계속 검토한다.
 
 재현 조건과 관련 위치를 가진 JSON finding을 빠짐없이 반환한다.
 실제 카메라 FPS·지정 드론 detection 품질은 미측정으로 남기고 필요한 관찰 방법을 적는다.
