@@ -2,7 +2,8 @@
 
 승인된 main의 `conditional_auto_merge` 설정에서 조건부 자동 병합을 사용한다.
 실제 접수/Gate 검증과 활성화 결과는 [구축 상태](setup-status.md)를 따른다.
-주기 접수 확인은 아직 설정 전이며, 설정 전에는 소유자의 로컬 실행으로 처리한다.
+정기 접수 확인은 1시간 간격이며, 실제 활성화 상태는 운영 검증 PR 본문에 기록한다.
+정기 실행 전에도 소유자의 로컬 실행으로 처리할 수 있다.
 
 허용 사용자: `ckrhehfl`, `ljwoo8942`, `chika-breeki`, `ddoss2414-max`.
 계정 이름과 GitHub 계정 ID, 현재 저장소 쓰기 권한을 모두 검사한다.
@@ -26,7 +27,7 @@ PR의 `software-checks`, `codex-review`, `decision-gate` 결과를 확인한다.
 ## 실행 조건과 중단
 
 소유자 PC와 Codex가 동작하고 GitHub/ChatGPT 로그인이 유효해야 한다.
-주기 접수 확인의 실제 활성화 여부는 구축 상태에 기록한다. PC가 꺼져 있으면 요청이 대기한다.
+주기 접수 확인은 최대 한 주기까지 대기할 수 있다. PC가 꺼져 있으면 요청이 대기한다.
 GitHub Actions에는 ChatGPT 로그인 파일·API Key를 넣지 않는다. 협업자와 인증을 공유하지 않는다.
 소유자의 기존 구독 사용 한도가 적용된다.
 
@@ -46,6 +47,8 @@ CI 실패는 Builder의 기술 수정 대상으로 처리하되 이 경로로 Fi
 악의적인 관리자나 저장소 쓰기 사용자의 모든 수동 변경을 막는 인증 체계라고 주장하지 않는다.
 로컬 `requests.sqlite3`와 기존 `fix-attempts.sqlite3`를 삭제·초기화·다른 PC로 분산하지 않는다.
 결과는 `artifacts/automation-requests/`에 보존하며 새 외부 업로드를 하지 않는다.
+전용 실행 폴더에서 최신 승인 main을 갱신한 후 실행하고 일반 개발 작업 폴더와 분리한다.
+로컬 폴더를 바꾸어도 동일 PC의 영구 수정/요청 이력을 그대로 사용한다.
 
 요청 workflow는 읽기 권한뿐이다. Gate는 소유자만 게시하고 별도 job의 `statuses: write`만 사용한다.
 Actions에 repository contents write를 부여하지 않는다. 실제 병합은 기존 소유자 로컬 인증으로

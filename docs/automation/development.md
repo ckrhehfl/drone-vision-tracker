@@ -2,7 +2,7 @@
 
 ## 로컬 환경
 
-검증 기준은 CPython 3.11.0이다. 드론 모델·GPU backend 의존성은 아직 선택하지 않는다.
+자동화 검사 기준은 CPython 3.11.0이다. 별도 드론 모델·GPU 환경은 [학습 안내](../training.md)를 따른다.
 Ruff 0.11.13 / pytest 8.3.5 / jsonschema 4.23.0 / PyYAML 6.0.2를 격리 환경에 설치하고
 전이 의존성까지 `requirements-dev.txt`에 고정했다. 자동 업그레이드는 하지 않는다.
 
@@ -138,6 +138,24 @@ CLI 결과 JSON의 PASS는 최신 CI·게시 리뷰·로컬 Decision Gate의 소
 연결한다. REVIEW는 필수 미검증 항목을 reviewer에게 재분류시키고 STOP은 해당 gate를 따른다.
 단독 Gate 명령과 결과 계약은 [Decision Gate](decision-gate.md)를 참조한다.
 PC가 켜져 있고 이 로컬 명령이 실행 중이어야 한다. GitHub runner에는 구독 인증을 배포하지 않는다.
+
+## 협업자 요청과 조건부 병합
+
+[협업자 안내](collaborators.md)에 따라 Actions에서 PR 번호로 접수한다.
+소유자 실행기의 `python -m tools.automation_worker --once`는 가장 오래된 미처리 요청 한 건을
+검증하고 위 파이프라인을 실행한 뒤 서버 Gate를 게시한다. 활성화된 main 설정에서만
+별도 병합기가 새 증거·세 필수 검사·현재 권한을 다시 확인해 병합한다.
+`tools.local_pipeline` 단독 명령은 계속 리뷰/Fix/Gate까지만 실행한다.
+요청 번호가 같으면 재실행하지 않으며 실패/중단을 포함해 이력을 보존한다.
+일반 CI 오류는 Builder가 해결한다. head/base가 바뀌면 과거 리뷰나 Gate를 재사용하지 않는다.
+PR당 수정 이력은 요청자나 checkout이 달라도 같은 PC의 영구 ledger를 사용한다.
+
+정기 확인은 Codex의 이 대화에 연결된 로컬 자동화로 구성하며 기본 간격은 1시간이다.
+별도 API·self-hosted GitHub runner·로그인 파일 업로드를 사용하지 않는다.
+일반 작업과 충돌하지 않도록 소유자 PC의 전용 작업 폴더에서 깨끗한 최신 승인 main을 사용한다.
+매번 Git 상태를 확인한 뒤 main을 fast-forward로 갱신한다. 사용자 변경을 되돌리지 않는다.
+처리할 요청이 없으면 알리지 않고, 완료·실패·필수 사람 작업 등 의미 있는 변화만 알린다.
+PC/Codex가 실행 중이어야 하며 주기 설정과 실제 병합 결과는 운영 검증 PR 본문에 기록한다.
 
 ## 공식 근거
 
