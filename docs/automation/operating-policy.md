@@ -97,9 +97,9 @@ reviewer 프로세스는 read-only sandbox를 사용한다. 결과는 로컬 JSO
 구독 인증 검증, 기반 PR 통합, 작은 검증 PR을 순서대로 진행한다.
 이는 운영 auto merge를 미리 활성화하는 것과 다르다.
 
-Phase 6에서 별도 publisher의 최신 SHA `codex-review` 게시를 검증했다. main은 관리자에게도
-PR과 strict `software-checks`/`codex-review`를 요구하고 force/delete를 금지한다.
-자동 Fixer와 로컬 Decision Gate의 단계·검증 증거는 현재 상태를 따른다. Auto Merge는 비활성이다.
+Phase 6에서 별도 publisher의 최신 SHA `codex-review` 게시를 검증했다. 당시 main은 관리자에게도
+PR과 strict `software-checks`/`codex-review`를 요구하고 force/delete를 금지했다.
+자동 Fixer와 로컬 Decision Gate의 단계·검증 증거는 현재 상태를 따른다. 당시 Auto Merge는 비활성이었다.
 2026-10-04의 v1.1 보완은 이 권한 경계·PR당 2회 한도·기존 중단 조건을 바꾸지 않는다.
 
 이후 사용자 A 선택에 따른 [D22](../05_decisions.md)는 PR #4 준비 코드의 남은 finding에만
@@ -111,3 +111,14 @@ Phase 7의 Fixer는 사용자 요청 범위의 기존 로컬 권한으로 후보
 이 변경을 승인된 main에 통합한 뒤 제한된 활성화 설정을 사용한다. 실제 push 후 CI/새 리뷰를
 검증하기 전에는 Phase 7 완료라고 하지 않는다. Phase 8 Gate는 코드 수정 없이 최신 증거를
 판정하며 [계약](decision-gate.md)을 따른다. Auto Merge는 Phase 9까지 비활성이다.
+
+Phase 9: 사용자 A 승인(D25)에 따라 현재 소유자와 지정 협업자 3명만 실행을 요청한다.
+이름·계정 ID·현재 쓰기 권한을 검사하며 소유자 PC 한 대의 기존 인증으로만 처리한다.
+PR #13의 실제 접수/서버 Gate와 보호 검증 후 PR #14의 새 CI/독립 리뷰/Gate를 통과해
+조건부 병합을 활성화했다. main은 `software-checks`, `codex-review`, `decision-gate`를 모두
+Actions app 15368의 필수 검사로 요구한다. strict/admin 적용·PR 필수·force/delete 금지를 유지한다.
+현재 증거를 재검증한 별도 병합기만 정확한 head로 보호된 squash 병합을 요청한다.
+Gate 자체는 병합하지 않으며 과거 JSON이나 status 하나로 병합하지 않는다.
+이름 목록·PR당 총 2회·기존 구독 한도를 공유한다. 신규 사용자 자동 허용·인증 공유·새 권한·
+유료 API·하드웨어·보호 우회는 추가하지 않는다. [운영 안내](collaborators.md)와
+[실제 검증](merge-verification.md)을 따른다.

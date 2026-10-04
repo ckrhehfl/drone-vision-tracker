@@ -22,6 +22,8 @@ Phase 8의 PASS는 병합 허가가 아니다. Auto Merge는 Phase 9 검증 전�
 협업자 요청은 [접수 계약](../../../docs/automation/collaborators.md)을 따른다.
 허용된 현재 계정만 요청하고 소유자 PC의 승인된 최신 main에서 `tools.automation_worker`가 처리한다.
 요청 이력·PR당 수정 이력을 초기화하지 않는다. 실제 활성화 상태는 main 설정/구축 상태를 확인한다.
+검증된 Phase 9에서는 worker가 서버 Gate를 게시하고 조건을 충족할 때만 별도 병합기를 호출한다.
+주기 실행은 운영 검증 PR의 실제 설정을 확인한다. 대기 요청이 없을 때 불필요한 AI 리뷰를 시작하지 않는다.
 `BUILDER_CI_FIX_REQUIRED`는 사람 결정이 아니다. CI 로그로 일반 오류를 수정하고 새 SHA로
 다시 실행한다. 이미 Fixer 시도를 사용한 PR에서는 이 경로로 2회 한도를 우회하지 않는다.
 timeout/인증/게시 오류는 PASS가 아니다. 기술 오류를 해결한 뒤 현재 SHA의 증거로 재개한다.

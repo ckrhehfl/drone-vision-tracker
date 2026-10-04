@@ -19,9 +19,12 @@ Phase 9: 사용자 A 승인(D25)으로 현재 협업자 3명과 소유자의 요
 [협업자 안내](collaborators.md)와 [검증 순서](auto-merge.md)를 따른다.
 PR #13 실제 접수 → CI → 독립 리뷰 → 서버 Gate PASS 및 중복/보호 누락/활성화 전 병합 거부를
 검증했다. main의 필수 검사는 CI/리뷰/Gate 3개이며 Actions app 15368, strict/admin 적용이다.
-[실제 증거](merge-verification.md)를 기록했다. 별도 활성화 PR의 main 반영 시점부터
-auto_fix_enabled=true, auto_merge_enabled=true다. 다음은 작은 PR의 실제 조건부 병합과
-주기 접수 설정이다. 주기 실행과 다른 협업자 세 명의 직접 UI 실행은 아직 확인하지 않았다.
+[실제 증거](merge-verification.md)를 기록했다. 별도 활성화 PR #14는 CI 389 passed/1 skipped,
+독립 리뷰 PASS/blocking 0, 서버 Gate PASS와 병합 준비 재검증 후 통합했다.
+현재 auto_fix_enabled=true, auto_merge_enabled=true다. 조건부 실제 병합과 1시간 간격의
+주기 접수 설정 결과는 [운영 검증 PR #15](https://github.com/ckrhehfl/drone-vision-tracker/pull/15)
+본문의 최신 증거를 따른다. 해당 PR이 병합되기 전에는 실제 자동 병합 성공으로 간주하지 않는다.
+다른 협업자 세 명의 직접 UI 실행과 실물/GPU 학습 smoke는 여전히 미검증이다.
 
 ## Phase 1 감사
 

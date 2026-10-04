@@ -25,4 +25,6 @@ Phase 9 활성화 후에만 최신 CI PASS + 최신 Review PASS + blocking 0 + D
 FIX는 남은 한도 내 일반 수정, REVIEW는 미검증 blocker의 분류를 reviewer에게 돌려보내는
 경로다. 모호한 항목을 임의로 사람/실물 승인으로 추정하지 않는다. STOP이면 해당 gate를 따른다.
 관찰 방법/기대 결과를 그대로 전달하고 승인받은 실물 시험 이후 새 리뷰로 미검증 상태를 갱신한다.
-Phase 8에는 merge 기능·서버 decision-gate status가 없다. Auto Merge는 Phase 9까지 비활성이다.
+Phase 8 당시 서버 decision-gate status와 merge 기능은 비활성이었다.
+검증된 Phase 9의 [별도 병합기](../../../docs/automation/auto-merge.md)는 Gate 게시와 최신
+증거·main 보호·활성화 설정·요청자 권한을 다시 검증한다. 이 Skill과 Gate 자체는 병합하지 않는다.

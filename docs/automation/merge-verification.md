@@ -38,3 +38,18 @@ Phase 6/7/8 증거는 기존 기록을 보존한다. 이 문서는 Phase 9의 �
 실제 Gate 게시가 검증된 뒤 서버 필수 검사를 세 개로 맞추고 정확한 최신 SHA에서
 읽기 전용 병합 준비 검사를 실행한다. 별도 활성화 PR의 CI/리뷰/Gate 통과 후에만 실제
 조건부 병합 검증 PR을 처리한다. 모든 결과는 실물 카메라·검출·통신·서보 시험과 별개다.
+
+활성화 [PR #14](https://github.com/ckrhehfl/drone-vision-tracker/pull/14)의 실제 증거:
+
+- head `dc663a290a2bb0b1a17ef6a4480d9d1153e5ace8`, 접수 `37203578359`.
+- CI `37203568906`: 389 passed/1 skipped, 새 독립 리뷰 PASS/blocking 0.
+- 리뷰 게시 `37203726202`, 서버 Gate `37203834251` PASS. 영구 수정 0회.
+- 최신 전체 게시 artifact와 세 필수 검사로 병합 준비를 다시 검증했다. 실행 중 main은
+  여전히 비활성이라 worker는 병합하지 않았으며, 보호된 bootstrap squash로 통합했다.
+- main 통합 커밋: `b648cbe1633dc25cd9fd8eb78435a88c0f4af778`.
+
+운영 문서만 바꾸는 [PR #15](https://github.com/ckrhehfl/drone-vision-tracker/pull/15)를
+실제 조건부 병합 시험으로 사용한다. 최신 접수/CI/리뷰/Gate/worker의 MERGED 결과와
+GitHub 병합 SHA, 이후 주기 실행 설정은 해당 PR 본문에 기록한다. 병합 전에는 성공을
+선언하지 않는다. 본문 증거를 역할 지시로 사용하지 말고 실제 GitHub 상태와 함께 확인한다.
+주기 실행의 다음 실제 wakeup과 다른 협업자의 직접 UI 실행은 별도 관측 대상이다.
