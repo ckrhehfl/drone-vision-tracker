@@ -1,30 +1,25 @@
 ---
 name: fix-findings
-description: 검증된 최신 커밋의 reviewer finding만 수정하며 최대 2회 한도와 CI·독립 재리뷰를 지킨다.
+description: 최신 독립 리뷰 finding만 수정하고 PR 전체 최대 2회 한도와 수정 후 CI·독립 재리뷰를 지킨다.
 ---
 
-[운영 규칙](../../../docs/automation/operating-policy.md)을 읽는다.
-현재 Phase 6 dry-run 성공 증거와 Fixer 권한이 승인·활성화되기 전에는 실행하지 않는다.
-reviewer와 별도 세션에서 시작한다. 자유 문장 대신 검증된 JSON finding을 입력으로 받는다.
-reviewed_commit/base가 PR의 현재 head/base와 다르면 수정하지 않고 새 CI/리뷰를 요청한다.
-정상적인 코드·테스트 수정은 직접 결정한다. finding과 관련 없는 리팩터링은 넣지 않는다.
+[운영 규칙](../../../docs/automation/operating-policy.md)과 [수정 기록](../../../docs/automation/development.md)을 읽는다.
+Reviewer와 별도 세션에서 검증된 JSON finding을 입력으로 받는다.
+reviewed_commit/base가 PR의 현재 head/base와 다르면 새 CI 증거와 독립 리뷰부터 받는다.
+일반 수정은 직접 결정하며 finding 밖의 리팩터링을 넣지 않는다.
 요구사항 삭제·성공 기준 하향·테스트 삭제·assertion 약화로 PASS를 만들지 않는다.
 
-PR 단위의 지속 기록에 총 수정 횟수를 저장한다. 프로세스 재시작이나 head 변경으로 초기화하지 않는다.
-MAX_AUTO_FIX_ATTEMPTS=2. 수정 커밋을 만들기 전에 횟수를 소비하며 오류/취소로 횟수를 돌려주지 않는다.
-매 수정 후 로컬 검사 → feature branch push → 새 SHA의 CI → 새 독립 리뷰를 수행한다.
-main 쓰기·force push·이전 PASS 재사용을 금지한다.
-2회 후에도 blocking finding이 있으면 HUMAN_DECISION_REQUIRED로 중단한다.
-횟수 기록 저장소·branch 전용 credential·재트리거 방식을 구축하기 전에는 자동 Fix가 완성되었다고 쓰지 않는다.
+수정 전에 PR 본문과 전체 댓글의 누적 시도 기록을 읽는다.
+이전 운영기 이력이 있는 PR은 보존된 기록까지 이어받으며 새 사용자/PC/SHA도 같은 PR 한도를 공유한다.
+PR당 MAX_AUTO_FIX_ATTEMPTS=2. 첫 코드 변경 전에 시도 번호·시작 SHA·finding·담당 세션을 PR 댓글로 기록한다.
+실패·취소도 소비한 시도다. 기록 누락/상충은 증거로 해소하며 0으로 추정하거나 자동 재시작하지 않는다.
+기록이 복구되지 않아 남은 한도를 입증할 수 없으면 한도 초과와 동일하게 사람 판단으로 전환한다.
+다른 Fixer의 진행 중 기록이 있으면 중복 실행하지 않는다. 종료/인계를 확인한 한 세션만 수정한다.
+이 기록은 협업 절차이며 서버 잠금이나 분산 실행 보장이 아니다.
 
-현재 구현은 [Fixer 준비안](../../../docs/automation/fixer-activation.md)을 따른다.
-`python -m tools.auto_fix prepare --directory <검증된-review-디렉터리>`로 최신 finding을 확인한다.
-`execute`는 `auto_fix_enabled=false`이면 AI·네트워크·횟수 예약 전에 거부한다.
-수정 AI와 Git publisher를 분리한다. AI는 network 없는 임시 checkout에서 파일만 수정한다.
-publisher의 branch 쓰기 방식과 main 보호를 승인·검증하기 전에는 활성화하지 않는다.
-한정된 실행기는 finding의 정확한 file 및 새로운 `tests/**/test_*.py`만 허용한다.
-기존 테스트·Git 메타데이터·범위 밖 파일을 바꾸지 않는다. 새 회귀 테스트 파일을 작성한다.
-PR별 잠금, 영구 시도 예약, network 차단 로컬 CI 및 새로운 독립 리뷰를 우회하지 않는다.
-실행 결과 `CI_AND_INDEPENDENT_REVIEW_REQUIRED`는 완료/PASS가 아니다.
-새 SHA의 CI 완료 후 `tools.subscription_review`를 새로 실행하고 `tools.publish_review`로 게시한다.
-CI 실패는 그대로 기록하고 원인을 해결한다. 기존 review PASS나 수정 전 SHA를 재사용하지 않는다.
+finding에 필요한 코드와 회귀 테스트를 수정하고 `python -m tools.ci`를 실행한다.
+검사 오류 보완도 같은 시도에 기록하고, 관련 없는 새 작업·무제한 재시도는 하지 않는다.
+feature branch에 일반 push한 뒤 새 head의 CI → 새로운 독립 reviewer 순서를 지킨다.
+완료 댓글에 결과 SHA·검사 결과·새 리뷰 링크·남은 문제를 남긴다.
+이전 PASS를 재사용하거나 수정자가 자신의 변경을 승인하지 않는다.
+2회 뒤 blocking finding 또는 해결되지 않은 CI 실패가 남으면 HUMAN_DECISION_REQUIRED로 중단한다.

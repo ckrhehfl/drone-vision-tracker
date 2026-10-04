@@ -35,10 +35,11 @@
 - 구현과 문서·예제 설정이 달라지면 함께 갱신한다.
 - 무제한 재시도·사용자 변경 되돌리기·강제 push는 하지 않는다. 자동 병합은 아래 단계별 검증이 끝난 후에만 허용한다.
 
-## Automation — 2026-09-30 사용자 요청
-- [운영 규칙](docs/automation/operating-policy.md)과 [현재 단계](docs/automation/setup-status.md)를 따른다. 일반 기술 선택은 에이전트가 결정한다.
-- `.codex/skills/`가 Skill 원본이며 `.agents/skills/`는 탐색용 진입점이다.
-- Builder / 읽기 전용 Reviewer / Fixer / Decision Gate를 분리한다. reviewer는 새 독립 세션에서 실제 diff·테스트를 검토한다.
-- 최대 자동 수정은 PR당 2회. 수정마다 새 SHA의 CI와 독립 리뷰가 필요하다.
-- Phase 6 검증 전 Fixer 활성화 금지, Phase 9 검증 전 Auto Merge 금지. main 직접 push 금지.
+## Shared Skills — 2026-10-04 사용자 정정
+- [운영 규칙](docs/automation/operating-policy.md)과 [현재 상태](docs/automation/setup-status.md)를 따른다. 일반 기술 선택은 에이전트가 결정한다.
+- `.codex/skills/`가 원본이며 `.agents/skills/`는 탐색용 진입점이다. 팀원 각자의 Codex/GitHub 계정과 기존 권한으로 사용한다.
+- Builder / 읽기 전용 Reviewer / Fixer / Decision Gate를 분리한다. Reviewer는 작성·수정과 분리된 새 세션에서 실제 diff·테스트를 검토한다.
+- 최대 수정은 PR 전체 2회이며 PR 댓글에 시작 전에 누적 기록한다. 담당자·PC·SHA 변경으로 초기화하지 않는다. 매 수정 뒤 새 CI와 새 독립 리뷰가 필요하다.
+- 사용자 요청에 병합이 포함되고 최신 CI·Review·Gate가 모두 PASS일 때만 보호된 PR을 병합한다. main 직접 push·관리자 우회는 금지한다.
+- 소유자 PC 접수·주기 실행·별도 자동 병합기는 D26으로 폐기했다. 과거 Phase 기록을 현재 실행 지침으로 사용하지 않는다.
 - 비용·Secret·권한·범위·실물 등 운영 규칙의 gate에서만 정해진 HUMAN_* 형식으로 요청한다.

@@ -1,6 +1,6 @@
 ---
 name: decision-gate
-description: CI·독립 리뷰·사람 승인·실물 증거를 확인해 진행 또는 중단을 판단하며 코드를 수정하지 않는다.
+description: 최신 CI·독립 리뷰·수정 횟수·사람 및 실물 증거로 진행 여부만 판단한다. 코드와 PR은 수정하지 않는다.
 ---
 
 [원본 Skill](../../../.codex/skills/decision-gate/SKILL.md)을 읽고 따른다.

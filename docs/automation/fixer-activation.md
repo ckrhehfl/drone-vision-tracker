@@ -1,3 +1,6 @@
+> 과거 검증 기록(D26 이전). 여기에 나오는 중앙 실행기·설정·명령은 폐기했다.
+> 현재는 [공유 스킬 안내](development.md)를 따른다. 아래 내용은 당시 증거로 보존한다.
+
 # Phase 7 제한된 로컬 Fixer
 
 Phase 6은 [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)에서 검증했다.
