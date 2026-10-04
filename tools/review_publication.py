@@ -9,13 +9,26 @@ from tools.validate_config import strict_json
 
 def validate_publication(run, bundle, destination):
     context = bundle["evidence"]["context"]
-    owner = REPOSITORY.split("/")[0]
     expected = "success" if bundle["report"]["status"] == "PASS" else "failure"
+    validate_artifact(
+        run,
+        bundle,
+        context,
+        expected,
+        destination,
+        ".github/workflows/codex-review.yml",
+        "validated-review",
+        "codex-review",
+    )
+
+
+def validate_artifact(run, bundle, context, expected, destination, workflow, artifact, check):
+    owner = REPOSITORY.split("/")[0]
     if (
         run["status"] != "completed"
         or run["event"] != "workflow_dispatch"
         or run["head_sha"] != context["base"]
-        or run["path"] != ".github/workflows/codex-review.yml"
+        or run["path"] != workflow
         or run["actor"]["login"] != owner
         or run["triggering_actor"]["login"] != owner
         or run["conclusion"] != expected
@@ -31,7 +44,7 @@ def validate_publication(run, bundle, destination):
             "--repo",
             REPOSITORY,
             "--name",
-            "validated-review",
+            artifact,
             "--dir",
             str(destination),
         ],
@@ -42,7 +55,7 @@ def validate_publication(run, bundle, destination):
     if saved != bundle:
         raise ValueError("Published structured evidence does not match the local review")
     statuses = api(f"repos/{REPOSITORY}/commits/{context['head']}/status")["statuses"]
-    status = next((item for item in statuses if item["context"] == "codex-review"), None)
+    status = next((item for item in statuses if item["context"] == check), None)
     if (
         not status
         or status["target_url"] != run["html_url"]

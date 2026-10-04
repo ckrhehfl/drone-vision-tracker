@@ -78,10 +78,16 @@ def require_trusted_dispatch():
 
 
 def post_status(context, report):
+    post_commit_status(context, report["status"], len(report["blocking_findings"]), "codex-review")
+
+
+def post_commit_status(context, status, blockers, check):
+    if check not in {"codex-review", "decision-gate"}:
+        raise ValueError("Unexpected status context")
     data = {
-        "state": "success" if report["status"] == "PASS" else "failure",
-        "context": "codex-review",
-        "description": f"{report['status']}; blockers={len(report['blocking_findings'])}",
+        "state": "success" if status == "PASS" else "failure",
+        "context": check,
+        "description": f"{status}; blockers={blockers}",
         "target_url": f"https://github.com/{REPOSITORY}/actions/runs/{int(os.environ['GITHUB_RUN_ID'])}",
     }
     request = Request(

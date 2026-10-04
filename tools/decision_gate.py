@@ -37,7 +37,7 @@ def decide(report, used):
         return status, "FIX", "Blocking software findings remain within the fix limit"
     if status != "PASS":
         raise ValueError("Unsupported review status")
-    return "PASS", "PROCEED", "Current software evidence passes; merge remains disabled"
+    return "PASS", "PROCEED", "Current software evidence passes; this gate does not execute merge"
 
 
 def assess(directory, publication_id):
@@ -46,7 +46,7 @@ def assess(directory, publication_id):
         raise ValueError("Expected a positive publication run ID")
     bundle = load_bundle(directory)
     saved = bundle["evidence"]["context"]
-    context, report = live_bundle(bundle, saved["ci_run_id"], saved["pr"], True)
+    context, _ = live_bundle(bundle, saved["ci_run_id"], saved["pr"], True)
     require_publishing_guards(context)
     run = api(f"repos/{REPOSITORY}/actions/runs/{publication_id}")
     if run["id"] != publication_id:
@@ -54,6 +54,19 @@ def assess(directory, publication_id):
     with tempfile.TemporaryDirectory(prefix="drone-gate-") as temporary:
         validate_publication(run, bundle, Path(temporary) / "published")
     used = count_attempts(ledger_path(), REPOSITORY, context["pr"])
+    result = decision_result(bundle, used, publication_id)
+    if (
+        current_context(REPOSITORY, context["ci_run_id"]) != context
+        or count_attempts(ledger_path(), REPOSITORY, context["pr"]) != used
+    ):
+        raise ValueError("PR/CI or fix history changed during decision")
+    return result
+
+
+def decision_result(bundle, used, publication_id):
+    """Build a snapshot from evidence already validated against live GitHub state."""
+    context = bundle["evidence"]["context"]
+    report = bundle["report"]
     status, action, reason = decide(report, used)
     result = {
         "schema_version": 1,
@@ -75,11 +88,6 @@ def assess(directory, publication_id):
     }
     schema = strict_json((ROOT / "schemas/decision-gate.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator(schema).validate(result)
-    if (
-        current_context(REPOSITORY, context["ci_run_id"]) != context
-        or count_attempts(ledger_path(), REPOSITORY, context["pr"]) != used
-    ):
-        raise ValueError("PR/CI or fix history changed during decision")
     return result
 
 

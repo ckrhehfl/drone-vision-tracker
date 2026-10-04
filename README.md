@@ -39,6 +39,9 @@ GitHub 업로드는 사용자 허락 후 PR로 진행합니다.
 GitHub Actions CI와 ChatGPT 구독의 로컬 독립 리뷰·최대 2회 Fixer를 연결했습니다. [실제 수정·재검증 기록](docs/automation/fix-dry-run.md), [구축 상태](docs/automation/setup-status.md), [실행 방법](docs/automation/development.md)을 확인합니다. 승인된 main 설정에서만 제한된 Fixer가 실행됩니다. [Decision Gate](docs/automation/decision-gate.md)는 최신 증거로 진행·수정·사람 판단·실물 시험을 구분합니다. 별도 유료 API·Auto Merge는 비활성입니다. 로컬 자동화에는 PC 가동이 필요합니다.
 
 ## GitHub에 올리기
+
+현재 협업자의 자동화 요청 방법은 [협업자 안내](docs/automation/collaborators.md)에 있습니다.
+Phase 9 준비 구현을 검증 중이며 조건부 자동 병합은 아직 활성화하지 않았습니다.
 ZIP을 풀고 **README.md와 AGENTS.md가 있는 폴더를 저장소 루트**로 사용합니다. ZIP 한 개를 저장소에 올리는 것이 아니라 압축을 푼 파일·폴더를 커밋합니다. 아래는 새 로컬 폴더를 새 빈 원격 저장소에 올릴 때의 예시입니다. 기존 저장소에는 `git init`을 반복하지 말고 기존 이력을 유지합니다.
 
 ```bash

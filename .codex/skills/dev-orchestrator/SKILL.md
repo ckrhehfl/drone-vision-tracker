@@ -19,6 +19,9 @@ README → 설계 → 결정 기록 → AGENTS 순으로 요구사항과 완료 
 게시 후 Decision Gate가 현재 증거를 재검증한다. `next_action=REVIEW`면 필수 미검증 항목을
 독립 reviewer가 명확히 분류하도록 하고, FIX/STOP/PASS 판정을 자의적으로 바꾸지 않는다.
 Phase 8의 PASS는 병합 허가가 아니다. Auto Merge는 Phase 9 검증 전까지 꺼 둔다.
+협업자 요청은 [접수 계약](../../../docs/automation/collaborators.md)을 따른다.
+허용된 현재 계정만 요청하고 소유자 PC의 승인된 최신 main에서 `tools.automation_worker`가 처리한다.
+요청 이력·PR당 수정 이력을 초기화하지 않는다. 실제 활성화 상태는 main 설정/구축 상태를 확인한다.
 `BUILDER_CI_FIX_REQUIRED`는 사람 결정이 아니다. CI 로그로 일반 오류를 수정하고 새 SHA로
 다시 실행한다. 이미 Fixer 시도를 사용한 PR에서는 이 경로로 2회 한도를 우회하지 않는다.
 timeout/인증/게시 오류는 PASS가 아니다. 기술 오류를 해결한 뒤 현재 SHA의 증거로 재개한다.
