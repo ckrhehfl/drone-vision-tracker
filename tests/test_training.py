@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -8,7 +9,11 @@ import pytest
 import yaml
 
 from tools.train import main, parser, select_device, train
-from tools.training_data import check_dataset, check_labels, clear_label_caches
+from tools.training_data import check_dataset, check_labels, clear_label_caches, sha256
+
+
+def image_entry(root, name):
+    return {"path": name, "timestamp_s": 0.0, "sha256": sha256(root / name)}
 
 
 def dataset(tmp_path):
@@ -22,7 +27,13 @@ def dataset(tmp_path):
         image.write_bytes(split.encode())
         label.write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
         sessions.append(
-            {"session_id": split, "split": split, "images": [f"images/{split}/frame.jpg"]}
+            {
+                "session_id": split,
+                "split": split,
+                "original_video": f"raw/{split}.mp4",
+                "original_video_sha256": hashlib.sha256(f"capture-{split}".encode()).hexdigest(),
+                "images": [image_entry(tmp_path, f"images/{split}/frame.jpg")],
+            }
         )
     data = tmp_path / "data.yaml"
     data.write_text(
@@ -78,7 +89,7 @@ def test_nested_images_directory_cannot_silently_drop_training_labels(tmp_path):
     (tmp_path / "images/train/frame.jpg").rename(image)
     (tmp_path / "labels/train/frame.txt").rename(label)
     contents = json.loads(manifest.read_text())
-    contents["sessions"][0]["images"] = ["images/train/session/images/frame.jpg"]
+    contents["sessions"][0]["images"][0]["path"] = "images/train/session/images/frame.jpg"
     manifest.write_text(json.dumps(contents))
     with pytest.raises(ValueError, match="Nested 'images'"):
         check_dataset(data, manifest)
@@ -96,7 +107,10 @@ def test_hidden_positive_cannot_be_replaced_by_visible_background(tmp_path, rela
     (tmp_path / "images/train/background.jpg").write_bytes(b"background")
     (tmp_path / "labels/train/background.txt").write_text("")
     contents = json.loads(manifest.read_text())
-    contents["sessions"][0]["images"] = [f"images/train/{relative}", "images/train/background.jpg"]
+    contents["sessions"][0]["images"] = [
+        image_entry(tmp_path, f"images/train/{relative}"),
+        image_entry(tmp_path, "images/train/background.jpg"),
+    ]
     manifest.write_text(json.dumps(contents))
     with pytest.raises(ValueError, match="Hidden image"):
         check_dataset(data, manifest)
@@ -120,10 +134,11 @@ def test_dataset_rejects_leaks_and_incomplete_inputs(tmp_path, failure):
         contents["sessions"][1]["session_id"] = "train"
     elif failure == "duplicate":
         (tmp_path / "images/val/frame.jpg").write_bytes(b"train")
+        contents["sessions"][1]["images"][0]["sha256"] = sha256(tmp_path / "images/val/frame.jpg")
     elif failure == "missing":
-        contents["sessions"][0]["images"] = ["images/train/missing.jpg"]
+        contents["sessions"][0]["images"][0]["path"] = "images/train/missing.jpg"
     elif failure == "outside":
-        contents["sessions"][0]["images"] = ["../frame.jpg"]
+        contents["sessions"][0]["images"][0]["path"] = "../frame.jpg"
     elif failure == "label":
         (tmp_path / "labels/train/frame.txt").unlink()
     else:
@@ -256,6 +271,11 @@ def test_synthetic_training_smoke(tmp_path, monkeypatch):
         image = Image.new("RGB", (96, 96), color=(40 + index * 40, 30, 50))
         ImageDraw.Draw(image).rectangle((38, 38, 58, 58), fill=(255, 255, 255))
         image.save(tmp_path / f"images/{split}/frame.jpg")
+    contents = json.loads(manifest.read_text(encoding="utf-8"))
+    for session in contents["sessions"]:
+        name = session["images"][0]["path"]
+        session["images"] = [image_entry(tmp_path, name)]
+    manifest.write_text(json.dumps(contents), encoding="utf-8")
     weights = tmp_path / "random.pt"
     YOLO("yolo11n.yaml").save(str(weights))  # Packaged architecture, random weights; no download.
     output = tmp_path / "smoke"

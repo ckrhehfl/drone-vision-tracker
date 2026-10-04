@@ -10,7 +10,14 @@
       "camera_settings": null,
       "distance_m": null,
       "original_video": null,
-      "images": []
+      "original_video_sha256": null,
+      "images": [
+        {
+          "path": "images/train/EXAMPLE_SESSION_01/frame001.jpg",
+          "timestamp_s": null,
+          "sha256": null
+        }
+      ]
     }
   ],
   "split_rule": "one_capture_session_in_one_split_only"

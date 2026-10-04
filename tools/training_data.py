@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import re
 from glob import has_magic
 from pathlib import Path
 
@@ -10,6 +11,10 @@ import yaml
 
 SPLITS = ("train", "val", "test")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+
+def is_sha256(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def sha256(path: Path) -> str:
@@ -65,6 +70,8 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
         )
     declared = {}
     session_ids = set()
+    capture_splits = {}
+    capture_names = {}
     for session in manifest["sessions"]:
         if not isinstance(session, dict):
             raise ValueError("Each session must be an object.")
@@ -80,18 +87,41 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
         ):
             raise ValueError("Sessions need a unique ID, one split and a nonempty images list.")
         session_ids.add(session_id)
-        for name in images:
+        original = session.get("original_video")
+        capture_hash = session.get("original_video_sha256")
+        if not isinstance(original, str) or not original.strip() or not is_sha256(capture_hash):
+            raise ValueError("Session needs original_video identity and original_video_sha256.")
+        for seen, identity in ((capture_splits, capture_hash), (capture_names, original)):
+            if identity in seen and seen[identity] != split:
+                raise ValueError("The same original capture cannot appear across splits.")
+            seen[identity] = split
+        for entry in images:
+            if not isinstance(entry, dict):
+                raise ValueError("Each image needs path, timestamp_s and reviewed sha256.")
+            name, timestamp, expected = (
+                entry.get("path"),
+                entry.get("timestamp_s"),
+                entry.get("sha256"),
+            )
+            if (
+                isinstance(timestamp, bool)
+                or not isinstance(timestamp, int | float)
+                or not math.isfinite(timestamp)
+                or timestamp < 0
+                or not is_sha256(expected)
+            ):
+                raise ValueError("Image timestamp_s must be finite/nonnegative and sha256 valid.")
             if (
                 not isinstance(name, str)
                 or Path(name).is_absolute()
                 or ".." in Path(name).parts
                 or "\\" in name
             ):
-                raise ValueError("Manifest images must be relative path strings.")
+                raise ValueError("Manifest image paths must be relative path strings.")
             image = (root / name).resolve()
             if not image.is_relative_to(root / "images" / split) or image in declared:
                 raise ValueError(f"Duplicate image or path outside its session split: {name}")
-            declared[image] = session_id
+            declared[image] = {"session_id": session_id, "sha256": expected}
 
     files, hashes, label_paths, counts = set(), {}, set(), {}
     inventory = []
@@ -123,13 +153,20 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
             label_paths.add(label)
             objects += check_labels(label)
             digest = sha256(image)
+            if digest != declared[resolved]["sha256"]:
+                raise ValueError(f"Image sha256 differs from the reviewed manifest: {image}")
             # ponytail: exact file hashes only; review near-duplicate frames manually.
             if digest in hashes and hashes[digest] != split:
                 raise ValueError(f"Identical image content across splits: {image}")
             hashes[digest] = split
             files.add(resolved)
             inventory.append(
-                [image.relative_to(root).as_posix(), digest, sha256(label), declared[resolved]]
+                [
+                    image.relative_to(root).as_posix(),
+                    digest,
+                    sha256(label),
+                    declared[resolved]["session_id"],
+                ]
             )
         if not objects:
             raise ValueError(f"Split needs at least one labeled drone: {split}")

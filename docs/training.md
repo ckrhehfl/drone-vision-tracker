@@ -57,25 +57,45 @@ data/dataset/
 `config/dataset.example.yaml`을 사용하거나 복사해 path를 수정한다.
 path는 YAML 파일 위치를 기준으로 해석한다.
 
-`data/manifests/drone-v1.json`을 작성한다. images는 데이터셋 루트 기준 경로다.
-모든 이미지가 manifest에 정확히 한 번 나타나야 한다.
+`data/manifests/drone-v1.json`을 작성한다. 각 images 항목은 데이터셋 루트 기준 path,
+원본 영상 내 timestamp_s, 검수한 이미지 바이트의 sha256을 가진 객체다.
+세션에는 original_video(원본 촬영 식별 경로)와 original_video_sha256도 필요하다.
+잘라 만든 클립은 그 이전 원본 촬영의 동일한 식별자/해시를 사용하며 split을 나누지 않는다.
+모든 이미지가 manifest에 정확히 한 번 나타나야 한다. 아래는 구조 예시이며 null을 실제
+원본 시각·해시로 채우기 전 실행할 수 없다. 가짜 값으로 ready 상태를 만들지 않는다.
 
 ```json
 {
   "schema_version": 1,
-  "status": "ready",
+  "status": "example_only",
   "dataset_version": "drone-v1",
   "sessions": [
-    {"session_id": "session01", "split": "train", "images": ["images/train/session01/frame001.jpg"]},
-    {"session_id": "session02", "split": "val", "images": ["images/val/session02/frame001.jpg"]},
-    {"session_id": "session03", "split": "test", "images": ["images/test/session03/frame001.jpg"]}
+    {
+      "session_id": "session01", "split": "train",
+      "original_video": "raw/session01.mp4", "original_video_sha256": null,
+      "images": [{"path": "images/train/session01/frame001.jpg", "timestamp_s": null, "sha256": null}]
+    },
+    {
+      "session_id": "session02", "split": "val",
+      "original_video": "raw/session02.mp4", "original_video_sha256": null,
+      "images": [{"path": "images/val/session02/frame001.jpg", "timestamp_s": null, "sha256": null}]
+    },
+    {
+      "session_id": "session03", "split": "test",
+      "original_video": "raw/session03.mp4", "original_video_sha256": null,
+      "images": [{"path": "images/test/session03/frame001.jpg", "timestamp_s": null, "sha256": null}]
+    }
   ]
 }
 ```
 
 템플릿의 example_only는 실행 대상으로 받지 않는다. 라벨 검수가 끝난 manifest에만 ready를 사용한다.
-중복 세션 ID, split 밖 경로, 누락 파일, 다른 클래스, 잘못된 좌표,
-split 사이 동일 파일 해시를 거부한다.
+중복 세션 ID, 다른 session_id로 숨긴 split 간 동일 원본 이름/해시, split 밖 경로,
+누락 파일, 다른 클래스, 잘못된 좌표, split 사이 동일 이미지 해시를 거부한다.
+경로만 있는 manifest·빠진/잘못된 시각·해시도 거부한다. 검수 후 이미지 바이트가 바뀌면
+실제 해시와 기록이 불일치하므로 실패한다. 자동으로 manifest 해시를 갱신해 검사를 우회하지 않는다.
+원본 영상 자체는 학습 시 읽지 않으므로 원본 식별자/해시/시각의 진실성은 촬영·추출 단계에서
+검수해야 한다. 사람이 거짓으로 나눈 세션 또는 미기록 파생 촬영을 완전히 탐지한다고 주장하지 않는다.
 이미지 경로의 하위 디렉터리 이름으로 images를 다시 사용하지 않는다.
 숨김 이미지·숨김 하위 디렉터리와 glob 특수문자가 있는 데이터셋 루트는 거부한다.
 학습 직전 YOLO가 실제 읽은 train/val 이미지·객체 수를 다시 검사한다.
