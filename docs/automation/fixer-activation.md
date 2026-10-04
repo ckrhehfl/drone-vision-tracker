@@ -1,9 +1,10 @@
 # Phase 7 제한된 로컬 Fixer
 
 Phase 6은 [PR #3](https://github.com/ckrhehfl/drone-vision-tracker/pull/3)에서 검증했다.
-Phase 7 준비 PR 이후 로컬 driver와 활성화 설정을 추가한다. 독립 리뷰를 통과한 이 변경이
-main으로 통합된 뒤에만 `auto_fix_enabled=true`를 읽어 실행한다. PR head의 설정은 신뢰하지 않는다.
-`auto_merge_enabled=false`를 유지한다. 실제 PR 수정·재검증 완료 증거는 별도로 기록한다.
+Phase 7의 driver와 활성화 설정은 PR #7에서 CI/독립 리뷰 후 main에 통합했다.
+승인된 main의 `auto_fix_enabled=true`에서만 실행하며 PR head의 설정은 신뢰하지 않는다.
+PR #8에서 실제 1회 수정·push·새 CI·새 리뷰를 확인했다. [전체 증거](fix-dry-run.md)를 따른다.
+`auto_merge_enabled=false`를 유지한다. Decision Gate/Auto Merge는 후속 단계다.
 
 ## 권한 분리
 
@@ -62,8 +63,8 @@ parent publisher가 기존 로컬 Git 인증으로 HTTPS 일반 push를 수행�
 
 `tools.local_pipeline`이 CI 대기 → 새 리뷰 → 검증된 전체 결과 게시 → 설정이 허용한 Fixer →
 새 SHA의 CI/리뷰 순서를 연결한다. 승인된 main 설정에서만 수정한다. CI 실패는 Builder가
-기존 횟수 제한을 유지하며 해결한다. 후속 Decision Gate, 실제 PR 수정·push 재트리거 검증은
-아직 미완료다. 현재 코드를 완성된 자동 Fix 파이프라인이라고 사용하지 않는다.
+기존 횟수 제한을 유지하며 해결한다. 제한된 실제 PR의 수정·push 재트리거 검증은 완료했다.
+후속 Decision Gate/Auto Merge와 모든 실물 시험은 미완료이며 전체 자동 개발 완료로 표현하지 않는다.
 
 독립 리뷰에서 Git hook 경계, 허용 파일 범위, 실행되지 않는 assertion 보존 문제가 제기됐다.
 각각 Git 메타데이터 전체 검사/빈 hooks, finding 파일 허용 목록, 기존 테스트 파일 불변으로
