@@ -3,6 +3,89 @@
 이번 범위는 P0 환경 확인, P2a 데이터 사전 검사, P2b 학습 실행 도구다.
 실제 지정 드론 데이터·가중치와 카메라 추적·팬틸트 제어는 아직 포함하지 않는다.
 
+## 1차 Seraphim → 실제 드론 사진 추가 학습
+
+사용자가 선택한 [Seraphim 공개 데이터](https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset)는
+단일 `drone` 클래스의 YOLO 데이터다. 데이터 카드 기준 83,483장(train 75,134 / test 8,349),
+640×640이며 CC BY 4.0으로 표시된다. 광고·합성 이미지가 섞여 있고 추가 수동 재라벨링을
+수행하지 않은 데이터다. 고정 revision은 `5b1c8348bf67e6836e3dbc42b053a5a4bfdec925`다.
+출처·저자·라이선스·ZIP 해시는 생성되는 manifest에 기록하며 원 출처도 데이터 카드에서 확인한다.
+
+기존 가상환경에서 실행한다. 아래 명령은 네트워크로 약 9.14GB의 ZIP을 내려받아 해시를
+검사하고 새 데이터 폴더로 준비한다. ZIP과 준비된 이미지가 함께 남으므로 약 20GB 이상의
+여유 공간을 먼저 확보한다. 추가 AI 패키지는 필요 없다. 학습은 시작하지 않는다.
+
+```bash
+python -m tools.prepare_dataset seraphim --source artifacts/seraphim-source --download --output data/dataset/seraphim-v1 --version seraphim-v1
+```
+
+이미 고정본 ZIP을 받았다면 같은 명령에서 `--download`를 뺀다. 원래 구조의
+`train/images/batch_001.zip`~`batch_004.zip`, `train/labels/batch_001.zip`,
+`test/images/batch_001.zip`, `test/labels/batch_001.zip`이 모두 있어야 한다.
+변경된 ZIP·공유 라벨·잘못된 경로·라벨 오류·split 사이 동일 이미지 내용은 실패로 처리한다.
+실패한 `.part` 또는 준비 폴더를 자동 삭제·덮어쓰지 않는다. 원인을 확인하고 새 폴더를 사용한다.
+
+고정본의 라벨 83,483개를 확인한 결과 3개 파일에 다각형 4행이 있어, 준비 단계에서 각
+다각형의 최소 외접 박스로 변환한다. 원본 ZIP은 보존하고 `label_preparation.polygon_to_box`에
+원본 라벨 경로와 변환 행 수를 남긴다. 박스 경계는 소수점 6자리 반올림 오차만 고려해
+정규화 좌표 `1e-6`까지 허용한다(640px에서 0.001px 미만). 그보다 큰 경계 오류,
+범위 밖 중심·다각형 좌표, 0 크기, 다른 클래스, 비정상 수치는 계속 거부한다.
+
+원래 test는 유지하며 원래 train 중 약 10%를 내용 해시와 seed=0으로 validation에 배정한다.
+`--val-fraction`, `--seed`로 실험 전 분할을 고정할 수 있다. 동일 내용은 같은 train/val에
+배정하지만 원본 촬영 그룹을 알 수 없어 유사 프레임의 독립성을 보장하지 않는다.
+공개본의 `split_independence=unverified`는 학습 기록에도 미검증으로 남는다.
+독립 촬영 test의 지정 드론 성능을 대신하지 않는다. 바운딩 박스·기체 정답성·유사 프레임을
+검수하고 `manifest.json`의 `status`를 `needs_review`에서 `ready`로 바꾼 뒤 실행한다.
+`ready` 전 학습은 거부된다. 도구가 가짜 원본 영상·timestamp를 만들거나 검수를 승인하지 않는다.
+
+```bash
+python -m tools.train --data data/dataset/seraphim-v1/dataset.yaml --manifest data/dataset/seraphim-v1/manifest.json --check-only
+python -m tools.train --data data/dataset/seraphim-v1/dataset.yaml --manifest data/dataset/seraphim-v1/manifest.json --model models/local/base.pt --device auto --output runs/train/seraphim-v1
+```
+
+`base.pt`에는 신뢰할 수 있는 로컬 detection 시작 가중치를 준비한다. 임의 초기 가중치의
+합성 smoke 결과를 1차 학습 모델로 사용하지 않는다. epoch·batch는 기존 시작값과 실제
+메모리 상황을 기준으로 정하며 위 명령은 CUDA → MPS → CPU 순으로 선택한다.
+
+실제 드론 사진이 준비되면 아래처럼 촬영 그룹을 **먼저 한 split에 배정**하고 라벨링한다.
+같은 시간·장소·카메라의 연속 사진을 서로 다른 폴더명으로 나누어 split에 숨기지 않는다.
+각 split에는 드론 라벨이 있어야 하며 검수된 배경은 빈 txt 라벨을 사용한다.
+
+```text
+data/dataset/real-v1/
+  images/train/capture01/photo001.jpg
+  labels/train/capture01/photo001.txt
+  images/val/capture02/photo001.jpg
+  labels/val/capture02/photo001.txt
+  images/test/capture03/photo001.jpg
+  labels/test/capture03/photo001.txt
+```
+
+```bash
+python -m tools.prepare_dataset photos --output data/dataset/real-v1 --version real-v1
+```
+
+이 명령은 사진·라벨을 바꾸지 않고 `dataset.yaml`과 `needs_review` manifest를 만든다.
+촬영 그룹 `capture_id`, 원본 상대 경로, 이미지 해시를 기록한다. 검수 후 `ready`로 바꾼다.
+영상 프레임을 사진으로 등록해 원본 영상·timestamp 검사를 피하지 않는다. 영상은 아래의
+기존 video manifest를 계속 사용한다. 이미 있는 metadata는 자동 갱신하지 않는다.
+
+```bash
+python -m tools.train --data data/dataset/real-v1/dataset.yaml --manifest data/dataset/real-v1/manifest.json --check-only
+python -m tools.train --data data/dataset/real-v1/dataset.yaml --manifest data/dataset/real-v1/manifest.json --model runs/train/seraphim-v1/weights/best.pt --device auto --output runs/train/real-v1
+```
+
+추가 학습은 **1차 best 가중치를 읽는 새로운 학습 실행**이다. 중단한 학습의 optimizer·epoch를
+복구하는 `resume` 기능과 구분한다. 기존 `--model`과 결과 기록을 재사용하며 1차 폴더를
+덮어쓰지 않는다. 두 실행의 초기/결과 가중치 해시로 연결을 확인할 수 있다.
+실제 사진 데이터 버전만 교체해 새 결과 폴더에서 반복한다. 각 단계의 validation으로만 튜닝하며
+실제 test 평가는 최종 단계에서 별도로 진행한다. 기존 모델이 배운 영향은 데이터 제외만으로
+지워지지 않는다. 일반 검출 성능 유지 여부도 필요하면 별도의 고정 평가셋에서 비교한다.
+
+준비된 데이터·manifest·가중치·원시 로그는 ignored 경로에 보관한다. 공개 데이터 전체 학습이나
+실제 지정 드론 추가 학습이 실행됐다는 뜻은 아니며 완료 시 각 실행의 기록·모델 카드를 작성한다.
+
 ## 설치
 
 Python 3.11, torch 2.9.1, torchvision 0.24.1, ultralytics 8.3.203을 사용한다.
