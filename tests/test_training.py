@@ -161,6 +161,15 @@ def test_invalid_labels_are_rejected(tmp_path, row):
     assert check_labels(label) == 0
 
 
+def test_six_decimal_box_edges_allow_rounding_but_reject_larger_errors(tmp_path):
+    label = tmp_path / "label.txt"
+    label.write_text("0 0.648438 0.525781 0.703125 0.698438\n")
+    assert check_labels(label) == 1
+    label.write_text("0 0.64844 0.525781 0.703125 0.698438\n")
+    with pytest.raises(ValueError, match="bounding box"):
+        check_labels(label)
+
+
 @pytest.mark.parametrize(
     ("cuda", "mps", "expected"), [(True, True, "0"), (False, True, "mps"), (False, False, "cpu")]
 )
@@ -216,8 +225,8 @@ def test_training_records_outcome_and_does_not_overwrite(tmp_path, monkeypatch, 
             test_loader=SimpleNamespace(dataset=LoadedDataset([{"cls": [0]}])),
         )
 
-        def __init__(self, *args, **kwargs):
-            pass
+        def __init__(self, model_path, **kwargs):
+            assert model_path == str(args.model.resolve())
 
         def add_callback(self, event, callback):
             assert event == "on_pretrain_routine_end"
@@ -250,6 +259,19 @@ def test_training_records_outcome_and_does_not_overwrite(tmp_path, monkeypatch, 
     assert "finished_utc" in record
     with pytest.raises(ValueError, match="already exists"):
         train(args, spec, summary)
+    if outcome == "completed":
+        first_output = output
+        first_weights = (first_output / "weights/best.pt").read_bytes()
+        args.model = first_output / "weights/best.pt"
+        output = tmp_path / "추가 학습"
+        args.output = output
+        second = train(args, spec, summary)
+        assert second["model_sha256"] == record["best_weights_sha256"]
+        assert (first_output / "weights/best.pt").read_bytes() == first_weights
+        assert (
+            json.loads((first_output / "training_record.json").read_text(encoding="utf-8"))
+            == record
+        )
 
 
 @pytest.mark.skipif(

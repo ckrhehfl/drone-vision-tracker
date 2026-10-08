@@ -11,6 +11,7 @@ import yaml
 
 SPLITS = ("train", "val", "test")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+BOX_EDGE_TOLERANCE = 1e-6  # Six-decimal YOLO rounding: <0.001 pixel at 640px.
 
 
 def is_sha256(value) -> bool:
@@ -32,16 +33,20 @@ def check_labels(path: Path) -> int:
         x, y, width, height = map(float, fields[1:])
         if not (
             all(math.isfinite(v) for v in (x, y, width, height))
+            and 0 <= x <= 1
+            and 0 <= y <= 1
             and 0 < width <= 1
             and 0 < height <= 1
-            and width / 2 <= x <= 1 - width / 2
-            and height / 2 <= y <= 1 - height / 2
+            and width / 2 - BOX_EDGE_TOLERANCE <= x <= 1 - width / 2 + BOX_EDGE_TOLERANCE
+            and height / 2 - BOX_EDGE_TOLERANCE <= y <= 1 - height / 2 + BOX_EDGE_TOLERANCE
         ):
             raise ValueError(f"Invalid normalized bounding box: {path}")
     return len(rows)
 
 
-def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
+def check_dataset(
+    data_path: Path, manifest_path: Path, *, require_ready: bool = True
+) -> tuple[dict, dict]:
     data_path = data_path.resolve()
     data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or set(data) - {"path", "train", "val", "test", "names", "nc"}:
@@ -60,7 +65,7 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or (
         manifest.get("schema_version") != 1
-        or manifest.get("status") != "ready"
+        or manifest.get("status") not in ({"ready"} if require_ready else {"ready", "needs_review"})
         or not isinstance(manifest.get("dataset_version"), str)
         or not manifest["dataset_version"].strip()
         or not isinstance(manifest.get("sessions"), list)
@@ -72,6 +77,8 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
     session_ids = set()
     capture_splits = {}
     capture_names = {}
+    source_images = {}
+    source_types = set()
     for session in manifest["sessions"]:
         if not isinstance(session, dict):
             raise ValueError("Each session must be an object.")
@@ -87,11 +94,37 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
         ):
             raise ValueError("Sessions need a unique ID, one split and a nonempty images list.")
         session_ids.add(session_id)
-        original = session.get("original_video")
-        capture_hash = session.get("original_video_sha256")
-        if not isinstance(original, str) or not original.strip() or not is_sha256(capture_hash):
-            raise ValueError("Session needs original_video identity and original_video_sha256.")
-        for seen, identity in ((capture_splits, capture_hash), (capture_names, original)):
+        source_type = session.get("source_type", "video")
+        if not isinstance(source_type, str):
+            raise ValueError("source_type must be video, photos or public_dataset.")
+        source_types.add(source_type)
+        if source_type == "video":
+            original = session.get("original_video")
+            capture_hash = session.get("original_video_sha256")
+            if not isinstance(original, str) or not original.strip() or not is_sha256(capture_hash):
+                raise ValueError("Session needs original_video identity and original_video_sha256.")
+            identities = ((capture_splits, capture_hash), (capture_names, original))
+        elif source_type == "photos":
+            capture_id = session.get("capture_id")
+            if not isinstance(capture_id, str) or not capture_id.strip():
+                raise ValueError("Photo session needs a reviewed capture_id.")
+            identities = ((capture_names, capture_id),)
+        elif source_type == "public_dataset":
+            source, revision = session.get("source_dataset"), session.get("source_revision")
+            if (
+                not isinstance(source, str)
+                or not source.strip()
+                or not isinstance(revision, str)
+                or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+                or session.get("split_independence") != "unverified"
+            ):
+                raise ValueError(
+                    "Public source needs dataset/revision and unverified independence."
+                )
+            identities = ()
+        else:
+            raise ValueError("source_type must be video, photos or public_dataset.")
+        for seen, identity in identities:
             if identity in seen and seen[identity] != split:
                 raise ValueError("The same original capture cannot appear across splits.")
             seen[identity] = split
@@ -103,14 +136,33 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
                 entry.get("timestamp_s"),
                 entry.get("sha256"),
             )
-            if (
+            if not is_sha256(expected):
+                raise ValueError("Image sha256 must be valid.")
+            if source_type == "video" and (
                 isinstance(timestamp, bool)
                 or not isinstance(timestamp, int | float)
                 or not math.isfinite(timestamp)
                 or timestamp < 0
-                or not is_sha256(expected)
             ):
                 raise ValueError("Image timestamp_s must be finite/nonnegative and sha256 valid.")
+            if source_type != "video":
+                original_path = entry.get("source_path")
+                if (
+                    not isinstance(original_path, str)
+                    or not original_path.strip()
+                    or Path(original_path).is_absolute()
+                    or ".." in Path(original_path).parts
+                    or "\\" in original_path
+                ):
+                    raise ValueError("Still image needs a relative source_path.")
+                identity = (
+                    (source, revision, original_path)
+                    if source_type == "public_dataset"
+                    else (capture_id, original_path)
+                )
+                if identity in source_images and source_images[identity] != split:
+                    raise ValueError("The same source image cannot appear across splits.")
+                source_images[identity] = split
             if (
                 not isinstance(name, str)
                 or Path(name).is_absolute()
@@ -181,6 +233,8 @@ def check_dataset(data_path: Path, manifest_path: Path) -> tuple[dict, dict]:
         "inventory_sha256": hashlib.sha256(json.dumps(inventory).encode()).hexdigest(),
         "splits": counts,
         "sessions": len(session_ids),
+        "source_types": sorted(source_types),
+        "public_split_independence_verified": False if "public_dataset" in source_types else None,
     }
     return spec, summary
 
