@@ -167,6 +167,24 @@ def test_invalid_or_partial_evidence_never_produces_accuracy(trial, case):
         evaluate(record, truth)
 
 
+def test_error_cannot_be_hidden_by_completed_status(clock):
+    metrics = SessionMetrics()
+    metrics.capture(0.1, (100, 100))
+    metrics.fail("camera input failed")
+    clock[0] = 0.2
+    metrics.finish()
+    record = metrics.report()
+    assert record["status"] == "failed" and record["error"] == "camera input failed"
+    record["status"] = "completed"
+    truth = {
+        "schema_version": 1,
+        "session_id": metrics.session_id,
+        "frames": [{"frame_id": 1, "box": None}],
+    }
+    with pytest.raises(ValueError, match="오류 기록"):
+        evaluate(record, truth)
+
+
 def test_cli_outputs_machine_readable_result_and_rejects_bad_json(trial, tmp_path, capsys):
     record, truth = trial
     inputs = [tmp_path / "record.json", tmp_path / "truth.json"]

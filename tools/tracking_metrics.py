@@ -197,6 +197,7 @@ def validate_record(record):
     rows = record.get("frames")
     if (
         record.get("status") != "completed"
+        or record.get("error") is not None
         or not isinstance(performance, dict)
         or performance.get("truncated") is not False
     ):

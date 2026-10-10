@@ -79,7 +79,9 @@ GUI 원본 사진 수집 → 사람의 정답 검수 → 촬영 그룹별 데이
 
 ## 4. 기존 YOLO 가중치에서 MPS 추가 학습
 
-신뢰하는 기존 드론 검출 가중치를 `models/local/baseline.pt`에 준비한다. 검수 상태와 데이터부터 검사한다.
+첫 실제 드론 사진 추가 학습에는 [Seraphim 1차 학습](training.md)의
+`runs/train/seraphim-v1/weights/best.pt`를 `models/local/baseline.pt`에 복사해 사용한다.
+복사본의 SHA-256이 원본과 같은지 확인하고 검수 상태와 데이터부터 검사한다.
 
 ```bash
 .venv/bin/python -m tools.train --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --check-only
@@ -99,7 +101,8 @@ MPS를 명시했을 때 사용할 수 없으면 실패한다. CPU 시험은 명�
 
 비교 장치 기본값은 MPS다. 두 모델 모두 클래스가 정확히 `0: drone`인 검출 가중치여야 한다.
 같은 validation·해상도·batch·장치로 precision, recall, mAP50, mAP50–95와 변화량을
-`comparison.json`에 남긴다. 데이터/가중치 해시와 완료·실패 상태도 기록한다.
+`comparison.json`에 남긴다. 데이터/가중치 해시, 요청·선택 장치와 완료·실패 상태도 기록한다.
+런타임 준비·장치 선택 실패도 실패 원인과 함께 기록하며 기존 출력 폴더를 덮어쓰지 않는다.
 MPS validation에는 기존 학습의 동기 배치 전송 보완을 적용하고 실제 읽은 이미지·객체 수를 확인한다.
 독립 test는 비교에 넘기지 않는다. 후보를 자동 승인·배포하지 않는다.
 

@@ -160,6 +160,7 @@ def test_preparation_uses_human_boxes_and_preserves_holdout(learning_plan, monke
         ("plan.json", lambda v: v["sources"][1].update(capture_id="train")),
         ("plan.json", lambda v: v["sources"].pop()),
         ("train/record.json", lambda v: v["performance"].update(truncated=True)),
+        ("train/record.json", lambda v: v.update(error="camera input failed")),
         ("train/record.json", lambda v: v["frames"][0].update(completed_s=0)),
         ("train/samples.json", lambda v: v.update(session_id="other")),
         ("train/samples.json", lambda v: v.update(status="failed")),
@@ -303,3 +304,64 @@ def test_annotations_changed_during_prepare_are_rejected(learning_plan, monkeypa
     with pytest.raises(ValueError, match="변경"):
         retrain.prepare(plan, output, "v2")
     assert not output.exists()
+
+
+@pytest.mark.parametrize("name", ["record", "samples", "annotations"])
+def test_source_json_changed_during_copy_is_rejected(learning_plan, monkeypatch, name):
+    plan, output = learning_plan
+    source = plan.parent / "train" / f"{name}.json"
+    original = retrain.shutil.copyfile
+
+    def copy_then_change(before, after):
+        original(before, after)
+        source.write_text(source.read_text() + "\n")
+
+    monkeypatch.setattr(retrain.shutil, "copyfile", copy_then_change)
+    with pytest.raises(ValueError, match="변경"):
+        retrain.prepare(plan, output, "v2")
+    assert output.exists() and not (output / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["runtime", "mps"])
+def test_cli_compare_records_setup_failure_and_preserves_output(
+    learning_plan, monkeypatch, capsys, failure
+):
+    plan, dataset = learning_plan
+    retrain.prepare(plan, dataset, "v2")
+    manifest = dataset / "manifest.json"
+    value = json.loads(manifest.read_text())
+    value["status"] = "ready"
+    write_json(manifest, value)
+    baseline = plan.parent / "baseline.pt"
+    baseline.write_bytes(b"trusted fixture")
+
+    def runtime():
+        if failure == "runtime":
+            raise ImportError("training runtime missing")
+        torch = SimpleNamespace(
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False))
+        )
+        return torch, None
+
+    monkeypatch.setattr(retrain, "prepare_runtime", runtime)
+    output = plan.parent / "comparison"
+    args = ["compare"]
+    for key, path in {
+        "data": dataset / "dataset.yaml",
+        "manifest": manifest,
+        "baseline": baseline,
+        "candidate": baseline,
+        "output": output,
+    }.items():
+        args += [f"--{key}", str(path)]
+    assert retrain.main(args) == 1
+    report_path = output / "comparison.json"
+    report = json.loads(report_path.read_text())
+    assert report["status"] == "failed"
+    assert report["requested_device"] == "mps" and report["device"] is None
+    expected = "training runtime missing" if failure == "runtime" else "MPS is unavailable"
+    assert expected in report["error"] and expected in capsys.readouterr().out
+    before = report_path.read_bytes()
+    assert retrain.main(args) == 1
+    assert report_path.read_bytes() == before
+    assert "이미" in capsys.readouterr().out

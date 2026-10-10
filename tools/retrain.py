@@ -240,6 +240,12 @@ def prepare(plan_path, output, version):
     )
     if sha256(plan_path) != plan_digest:
         raise ValueError("준비 중 촬영 분할 계획이 변경됐습니다. 새 버전으로 다시 준비하세요.")
+    for entry, _, _, provenance in loaded:
+        if provenance != {
+            key + "_sha256": sha256(local_input(plan_path.parent, entry[key]))
+            for key in ("record", "samples", "annotations")
+        }:
+            raise ValueError("준비 중 측정·수집·라벨 파일이 변경됐습니다. 다시 검수하세요.")
     return write_metadata(
         output,
         version,
@@ -267,26 +273,29 @@ def compare(args):
         raise ValueError("신뢰하는 로컬 baseline/candidate .pt 파일이 필요합니다.")
     if args.imgsz < 32 or args.imgsz % 32 or args.batch < 1:
         raise ValueError("imgsz는 32의 양의 배수, batch는 양수여야 합니다.")
-    torch, YOLO = prepare_runtime()
-    device = select_device(args.device, torch)
-    validator = None
-    if device == "mps":
-        from tools.mps_training import MPSDetectionValidator
-
-        validator = MPSDetectionValidator
     output.mkdir(parents=True, exist_ok=False)
     data = output / "validation-data.yaml"
-    data.write_text(yaml.safe_dump(spec), encoding="utf-8")
     report = {
         "status": "running",
+        "error": None,
         "test_evaluated": False,
         "dataset": dataset,
-        "device": device,
+        "requested_device": args.device,
+        "device": None,
         "imgsz": args.imgsz,
         "batch": args.batch,
         "models": {},
     }
     try:
+        data.write_text(yaml.safe_dump(spec), encoding="utf-8")
+        torch, YOLO = prepare_runtime()
+        device = select_device(args.device, torch)
+        report["device"] = device
+        validator = None
+        if device == "mps":
+            from tools.mps_training import MPSDetectionValidator
+
+            validator = MPSDetectionValidator
         for role, path in weights.items():
             digest = sha256(path)
             model = YOLO(str(path.resolve()), task="detect")
@@ -330,8 +339,9 @@ def compare(args):
             for key in scores
         }
         report["status"] = "completed"
-    except BaseException:
+    except BaseException as exc:
         report["status"] = "failed"
+        report["error"] = str(exc)
         raise
     finally:
         (output / "comparison.json").write_text(
