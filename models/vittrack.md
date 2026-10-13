@@ -21,7 +21,9 @@ GUI 장치 `mps` 또는 `cuda`에서는 이 ONNX의 같은 가중치를 `onnx2to
 잔여 할당이 누적되는 것을 확인했으며, 대상 템플릿·위치·점수는 추적기마다 분리한다.
 재사용 전에도 GUI의 원본 파일 해시 검사는 유지한다.
 `onnx==1.17.0`·`protobuf==5.29.6`을 macOS 잠금 파일에 고정했다. 가중치나 영상은 새로 저장하지 않는다.
-Windows 설치는 [Windows CUDA 안내](../docs/windows-cuda.md)를 따른다. 현재 CUDA ViT 실제 추론은 미검증이다.
+Windows 설치는 [Windows CUDA 안내](../docs/windows-cuda.md)를 따른다.
+2026-10-13 RTX 5070에서 같은 해시의 모델로 CUDA 초기화·합성 프레임 추론·모델 재사용을
+확인했다. [검증 기록과 한계](../reports/windows_cuda_validation_2026-10-13.md)를 참조한다.
 전처리의 BGR 채널·정규화·패딩과 Hann 창·좌표 복원은
 [고정 OpenCV 소스](https://github.com/opencv/opencv/blob/5.0.0/modules/video/src/tracking/tracker_vit.cpp)를 따른다.
 정규화 배율도 해당 소스의 `1 / Scalar` 연산을 그대로 재현한다. 이는 채널별 역수와 다르며

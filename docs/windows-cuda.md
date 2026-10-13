@@ -67,7 +67,10 @@ CUDA wheel·Tk·OpenCV·ONNX 변환 라이브러리의 import, 한글 경로 원
 실제 실행 성공·실패와 테스트 수는 PR의 정확한 head에 연결된 Actions 및 독립 리뷰 기록에서 확인한다.
 Windows 검사가 PASS여도 GPU 추론·CUDA 학습·실제 드론 정확도를 검증한 것은 아니다.
 
-향후 Windows NVIDIA PC를 확보하면 먼저 CUDA 가용성을 확인하고 다음 기존 합성 검사를 실행한다.
+2026-10-13 Windows RTX 5070에서 실제 CUDA ViT·YOLO 추론, 합성 학습과 추가 학습,
+동일 validation 비교를 확인했다. [실기기 검증 기록](../reports/windows_cuda_validation_2026-10-13.md)을 참조한다.
+ViT의 ONNX 변환은 Windows 임시 파일 잠금을 피하도록 모델을 먼저 메모리에 읽는다.
+다른 NVIDIA PC에서도 먼저 CUDA 가용성을 확인하고 다음 기존 합성 검사를 실행한다.
 
 ```powershell
 $env:RUN_TRAINING_SMOKE="1"
@@ -75,5 +78,6 @@ $env:TRAINING_SMOKE_DEVICE="cuda"
 .\.venv\Scripts\python.exe -m pytest tests/test_training.py -k synthetic_training_smoke --basetemp=artifacts/windows-cuda-smoke -q
 ```
 
-실제 GPU의 ViT·YOLO 추론, 같은 validation 비교, 지정 드론 test, 카메라 입력 FPS·지연과
-Serial·서보·펌웨어는 현재 미검증이다. GUI 수동 ViT와 학습 YOLO는 서로 다른 모델·용도다.
+이번 GPU 검증은 합성 입력의 실행 흐름 확인이다. 실제 지정 드론 데이터의 추가 학습·test,
+카메라 입력 FPS·지연, Serial·서보·펌웨어와 이번 변경의 Mac MPS 실기기 실행은 미검증이다.
+GUI 수동 ViT와 학습 YOLO는 서로 다른 모델·용도다.

@@ -10,6 +10,7 @@ def _torch_model(model_path, device):
     import torch
 
     try:
+        import onnx
         from onnx2torch import convert
     except ImportError as exc:
         raise ValueError("수동 GPU 패키지가 없습니다. 운영체제별 설치 안내를 확인하세요.") from exc
@@ -17,7 +18,8 @@ def _torch_model(model_path, device):
     with torch.inference_mode(), warnings.catch_warnings():
         warnings.simplefilter("ignore", torch.jit.TracerWarning)
         warnings.filterwarnings("ignore", message="Using a non-tuple sequence")
-        model = convert(model_path).eval()
+        # A loaded model avoids onnx2torch's Windows locked temporary-file path.
+        model = convert(onnx.load(model_path)).eval()
         samples = (torch.zeros(1, 3, 128, 128), torch.zeros(1, 3, 256, 256))
         # Fixed shapes fold shape/slice metadata without GPU synchronizations.
         model = torch.jit.freeze(torch.jit.trace(model, samples).eval().to(device))

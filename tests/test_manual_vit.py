@@ -24,7 +24,12 @@ def test_gpu_unavailable_is_explicit_and_does_not_run_cpu(monkeypatch, device):
 def test_gpu_restarts_reuse_network_but_keep_devices_and_target_state_separate(monkeypatch, device):
     import tools.manual_vit as vit
 
-    conversions, traces, warmups, syncs = [], [], [], []
+    loads, conversions, traces, warmups, syncs = [], [], [], [], []
+
+    def load(path):
+        model = SimpleNamespace(path=path)
+        loads.append(model)
+        return model
 
     class Runtime:
         def eval(self):
@@ -54,23 +59,26 @@ def test_gpu_restarts_reuse_network_but_keep_devices_and_target_state_separate(m
         mps=SimpleNamespace(synchronize=lambda: syncs.append("mps")),
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "onnx", SimpleNamespace(load=load))
     monkeypatch.setitem(
         sys.modules,
         "onnx2torch",
-        SimpleNamespace(convert=lambda path: conversions.append(path) or Runtime()),
+        SimpleNamespace(convert=lambda model: conversions.append(model) or Runtime()),
     )
     vit._torch_model.cache_clear()
     try:
         first = TorchVitTracker("pinned.onnx", 0.65, device)
         second = TorchVitTracker("pinned.onnx", 0.8, device)
-        assert conversions == ["pinned.onnx"] and len(traces) == 1
+        assert [model.path for model in loads] == ["pinned.onnx"] and len(traces) == 1
+        assert conversions == loads
         assert len(warmups) == 3
         assert first.model is second.model
         other_device = "cuda" if device == "mps" else "mps"
         other = TorchVitTracker("pinned.onnx", 0.65, other_device)
         assert other.model is not first.model and other.model.device == other_device
         assert first.model.device == device and first.device == device
-        assert conversions == ["pinned.onnx", "pinned.onnx"] and syncs == [device, other_device]
+        assert [model.path for model in loads] == ["pinned.onnx", "pinned.onnx"]
+        assert conversions == loads and syncs == [device, other_device]
         first._crop = lambda *args: ("first template", 128, (0, 0))
         second._crop = lambda *args: ("second template", 128, (0, 0))
         first.init("frame", (10, 20, 30, 40))
