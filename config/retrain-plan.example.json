@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "needs_review",
+  "split_rule": "capture_group_before_case_selection",
+  "sources": [
+    {
+      "split": "train",
+      "capture_id": "independent-capture-train",
+      "record": "train/measurement.json",
+      "samples": "train/samples.json",
+      "annotations": "train/annotations.json"
+    },
+    {
+      "split": "val",
+      "capture_id": "independent-capture-val",
+      "record": "val/measurement.json",
+      "samples": "val/samples.json",
+      "annotations": "val/annotations.json"
+    },
+    {
+      "split": "test",
+      "capture_id": "independent-capture-test",
+      "record": "test/measurement.json",
+      "samples": "test/samples.json",
+      "annotations": "test/annotations.json"
+    }
+  ]
+}

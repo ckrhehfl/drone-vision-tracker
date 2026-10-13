@@ -69,18 +69,7 @@ def check_loaded_data(trainer, summary: dict) -> None:
             raise RuntimeError(f"YOLO loaded different {split} data: {actual}; reject this run.")
 
 
-def train(args, spec: dict, summary: dict) -> dict:
-    if not args.model or not args.model.is_file() or args.model.suffix != ".pt":
-        raise ValueError(
-            "--model must be trusted local .pt weights. Automatic download is disabled."
-        )
-    if args.epochs < 1 or args.batch < 1 or args.imgsz < 32 or args.imgsz % 32 or args.seed < 0:
-        raise ValueError(
-            "epochs/batch must be positive; imgsz a positive multiple of 32; seed >= 0."
-        )
-    output = args.output.resolve()
-    if output.exists():
-        raise ValueError(f"Output already exists; choose a new --output: {output}")
+def prepare_runtime():
     # Keep library settings/caches inside the ignored local artifacts directory.
     os.environ.setdefault("YOLO_CONFIG_DIR", str(ROOT / "artifacts" / "ultralytics"))
     os.environ.setdefault("MPLCONFIGDIR", str(ROOT / "artifacts" / "matplotlib"))
@@ -96,6 +85,22 @@ def train(args, spec: dict, summary: dict) -> dict:
             False,
         )
     )
+    return torch, YOLO
+
+
+def train(args, spec: dict, summary: dict) -> dict:
+    if not args.model or not args.model.is_file() or args.model.suffix != ".pt":
+        raise ValueError(
+            "--model must be trusted local .pt weights. Automatic download is disabled."
+        )
+    if args.epochs < 1 or args.batch < 1 or args.imgsz < 32 or args.imgsz % 32 or args.seed < 0:
+        raise ValueError(
+            "epochs/batch must be positive; imgsz a positive multiple of 32; seed >= 0."
+        )
+    output = args.output.resolve()
+    if output.exists():
+        raise ValueError(f"Output already exists; choose a new --output: {output}")
+    torch, YOLO = prepare_runtime()
     device = select_device(args.device, torch)
     trainer = None
     if device == "mps":
