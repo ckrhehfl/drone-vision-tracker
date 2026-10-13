@@ -10,7 +10,7 @@ from tools.frame_collection import FrameCollector
 from tools.training_data import sha256
 
 
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("fail", [False, "encode", "disk"])
 def test_bounded_async_collection_sampling_close_and_failure(tmp_path, monkeypatch, fail):
     entered, release = threading.Event(), threading.Event()
     copied = []
@@ -22,16 +22,20 @@ def test_bounded_async_collection_sampling_close_and_failure(tmp_path, monkeypat
             copied.append(True)
             return self
 
-    def write(path, frame):
+    def encode(extension, frame):
+        assert extension == ".png"
         entered.set()
         assert release.wait(2)
-        if fail:
-            return False
-        Path(path).write_bytes(b"original-pixels")
-        return True
+        return fail != "encode", SimpleNamespace(tobytes=lambda: b"original-pixels")
 
-    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(imwrite=write))
-    collector = FrameCollector(tmp_path / "collection", SimpleNamespace(started=10, session_id="s"))
+    if fail == "disk":
+
+        def full_disk(*args):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "write_bytes", full_disk)
+    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(imencode=encode))
+    collector = FrameCollector(tmp_path / "원본 수집", SimpleNamespace(started=10, session_id="s"))
     try:
         collector.submit(1, 10, Frame())
         assert entered.wait(1)
@@ -46,8 +50,8 @@ def test_bounded_async_collection_sampling_close_and_failure(tmp_path, monkeypat
     collector.close()
     collector.submit(6, 12, Frame())
     assert len(copied) == 4 and not collector.thread.is_alive()
-    data = json.loads((collector.root / "samples.json").read_text())
-    labels = json.loads((collector.root / "annotations.example.json").read_text())
+    data = json.loads((collector.root / "samples.json").read_text(encoding="utf-8"))
+    labels = json.loads((collector.root / "annotations.example.json").read_text(encoding="utf-8"))
     assert data["session_id"] == "s" and data["source_type"] == "camera_stills"
     assert labels["status"] == "needs_review" and labels["target_class"] == "drone"
     if fail:

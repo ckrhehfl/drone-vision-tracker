@@ -360,7 +360,7 @@ def main(argv=None):
     validation = commands.add_parser("compare")
     for name in ("data", "manifest", "baseline", "candidate", "output"):
         validation.add_argument(f"--{name}", type=Path, required=True)
-    validation.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="mps")
+    validation.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     validation.add_argument("--imgsz", type=int, default=640)
     validation.add_argument("--batch", type=int, default=4)
     args = parser.parse_args(argv)

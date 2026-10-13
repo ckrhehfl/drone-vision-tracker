@@ -25,3 +25,64 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - name: Run software checks
         run: python -m tools.ci
+  windows:
+    name: windows-software-checks
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '0'
+      RUN_TRAINING_SMOKE: '1'
+      TRAINING_SMOKE_DEVICE: cpu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11.0'
+      - name: Install pinned Windows CUDA environment
+        run: |
+          python -m pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install --no-cache-dir -r requirements-windows.txt
+      - name: Verify Windows runtime and CUDA wheel
+        run: |
+          @'
+          import json, sys
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from types import SimpleNamespace
+          import cv2, onnx2torch, tkinter, torch, torchvision
+          import numpy as np
+          from tools.frame_collection import FrameCollector
+          from tools.train import select_device
+          assert sys.platform == 'win32'
+          assert torch.version.cuda == '12.8'
+          assert hasattr(cv2, 'TrackerVit_create')
+          assert torch.ones(2, 2).sum().item() == 4
+          with TemporaryDirectory() as parent:
+              frame = np.arange(12 * 16 * 3, dtype=np.uint8).reshape(12, 16, 3)
+              collector = FrameCollector(Path(parent) / '원본 수집', SimpleNamespace(started=1, session_id='ci'))
+              collector.submit(1, 1, frame)
+              collector.close()
+              assert collector.error is None and len(collector.samples) == 1
+              path = collector.root / collector.samples[0]['image_path']
+              restored = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+              assert np.array_equal(frame, restored)
+          if not torch.cuda.is_available():
+              try:
+                  select_device('cuda', torch)
+              except ValueError:
+                  pass
+              else:
+                  raise AssertionError('Explicit CUDA must fail without a GPU')
+          print(json.dumps({'torch': torch.__version__, 'cuda_runtime': torch.version.cuda,
+                            'cuda_available': torch.cuda.is_available(), 'unicode_png_roundtrip': True,
+                            'gpu_execution_tested': False}))
+          '@ | python -
+      - name: Check installed dependencies
+        run: python -m pip check
+      - name: Run Windows software checks and CPU synthetic training
+        run: python -m tools.ci

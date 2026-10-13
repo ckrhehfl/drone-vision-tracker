@@ -77,7 +77,7 @@ GUI 원본 사진 수집 → 사람의 정답 검수 → 촬영 그룹별 데이
 영상에서 추출한 프레임의 원본 영상 SHA·PTS를 대신하지 않는다. 그런 자료는 기존 video manifest를 사용한다.
 기존 출력 폴더를 덮어쓰지 않는다. 준비 중 실패한 폴더도 보존하므로 원인을 확인하고 새 버전을 쓴다.
 
-## 4. 기존 YOLO 가중치에서 MPS 추가 학습
+## 4. 기존 YOLO 가중치에서 CUDA/MPS 추가 학습
 
 첫 실제 드론 사진 추가 학습에는 [Seraphim 1차 학습](training.md)의
 `runs/train/seraphim-v1/weights/best.pt`를 `models/local/baseline.pt`에 복사해 사용한다.
@@ -90,6 +90,7 @@ GUI 원본 사진 수집 → 사람의 정답 검수 → 촬영 그룹별 데이
 
 기존 가중치로 새 학습을 시작한다. 결과는 별도 run의 `weights/best.pt`와 `training_record.json`에 남는다.
 MPS를 명시했을 때 사용할 수 없으면 실패한다. CPU 시험은 명시적으로 `--device cpu`를 사용한다.
+Windows CUDA 설치·PowerShell 명령은 [Windows 안내](windows-cuda.md)를 따른다.
 기존 모델·자료를 자동 다운로드·교체하지 않는다. test는 무결성 검사에만 쓰고 학습에 넘기지 않는다.
 반복 학습 시 기존 조건의 사진도 train에 포함해 검출 성능 유지 여부를 고정 validation에서 확인한다.
 
@@ -99,7 +100,9 @@ MPS를 명시했을 때 사용할 수 없으면 실패한다. CPU 시험은 명�
 .venv/bin/python -m tools.retrain compare --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --baseline models/local/baseline.pt --candidate runs/train/drone-retrain-v1-mps/weights/best.pt --output runs/compare/drone-retrain-v1 --imgsz 640 --batch 4
 ```
 
-비교 장치 기본값은 MPS다. 두 모델 모두 클래스가 정확히 `0: drone`인 검출 가중치여야 한다.
+비교 장치 기본값은 `auto`이며 CUDA → MPS → CPU 순으로 선택한다.
+GPU 검증에는 `--device cuda` 또는 `--device mps`를 명시하며 사용할 수 없으면 실패한다.
+두 모델 모두 클래스가 정확히 `0: drone`인 검출 가중치여야 한다.
 같은 validation·해상도·batch·장치로 precision, recall, mAP50, mAP50–95와 변화량을
 `comparison.json`에 남긴다. 데이터/가중치 해시, 요청·선택 장치와 완료·실패 상태도 기록한다.
 런타임 준비·장치 선택 실패도 실패 원인과 함께 기록하며 기존 출력 폴더를 덮어쓰지 않는다.

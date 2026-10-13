@@ -102,6 +102,7 @@ python -c "import torch; print(torch.backends.mps.is_available())"
 
 `requirements-macos.lock.txt`는 Mac arm64의 개발·학습 환경 전체 버전 기록이다.
 Windows/Linux 설치에는 사용하지 않는다.
+Windows GUI까지 설치하는 명령과 현재 소프트웨어 검증 범위는 [Windows CUDA 안내](windows-cuda.md)를 따른다.
 NVIDIA PC에서도 Python 3.11 가상환경을 만든 뒤 활성화한다.
 Windows PowerShell: `py -3.11 -m venv .venv`, `.venv\Scripts\Activate.ps1`.
 Linux: `python3.11 -m venv .venv`, `source .venv/bin/activate`.

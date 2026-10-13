@@ -48,8 +48,11 @@ class FrameCollector:
 
                 name = f"frames/frame-{frame_id:06d}.png"
                 path = self.root / name
-                if not cv2.imwrite(str(path), frame):
+                ok, encoded = cv2.imencode(".png", frame)
+                if not ok:
                     raise OSError("PNG 저장 실패")
+                # Python opens Unicode paths correctly on Windows; OpenCV uses narrow fopen.
+                path.write_bytes(encoded.tobytes())
                 self.samples.append(
                     {
                         "frame_id": frame_id,

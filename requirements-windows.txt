@@ -1,0 +1,7 @@
+# Windows x86_64 / Python 3.11; install the CUDA wheel first (docs/windows-cuda.md).
+-r requirements-dev.txt
+-r requirements-training.txt
+onnx==1.17.0
+onnx2torch==1.5.15
+opencv-python==5.0.0.93
+pillow==12.3.0
