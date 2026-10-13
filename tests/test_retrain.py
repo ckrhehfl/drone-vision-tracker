@@ -115,22 +115,22 @@ def test_preparation_uses_human_boxes_and_preserves_holdout(learning_plan, monke
     summary = retrain.prepare(plan, output, "v2")
     assert summary["splits"] == {s: {"images": 2, "objects": 1} for s in ("train", "val", "test")}
     manifest_path = output / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "needs_review"
     assert manifest["retrain_plan_sha256"] == sha256(plan)
     assert all(v["source_type"] == "photos" for v in manifest["sessions"])
     assert all("original_video" not in v for v in manifest["sessions"])
     for origin in manifest["learning_sources"]:
         assert origin["record_sha256"] == sha256(plan.parent / origin["split"] / "record.json")
-    assert (output / "labels/train/source-001/000001.txt").read_text().split() == [
+    assert (output / "labels/train/source-001/000001.txt").read_text(encoding="utf-8").split() == [
         "0",
         "0.200000000000",
         "0.400000000000",
         "0.200000000000",
         "0.400000000000",
     ]
-    assert (output / "labels/train/source-001/000002.txt").read_text() == ""
-    cases = json.loads((output / "training_cases.json").read_text())
+    assert (output / "labels/train/source-001/000002.txt").read_text(encoding="utf-8") == ""
+    cases = json.loads((output / "training_cases.json").read_text(encoding="utf-8"))
     assert [v["case"] for v in cases] == ["mislocalized", "background_false_box"]
     assert all(v["path"].startswith("images/train/") for v in cases)
     with pytest.raises(ValueError, match="ready"):
@@ -179,7 +179,7 @@ def test_preparation_uses_human_boxes_and_preserves_holdout(learning_plan, monke
 def test_invalid_sources_fail_before_creating_dataset(learning_plan, file, mutate):
     plan, output = learning_plan
     path = plan.parent / file
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     mutate(value)
     write_json(path, value)
     with pytest.raises(ValueError):
@@ -187,7 +187,7 @@ def test_invalid_sources_fail_before_creating_dataset(learning_plan, file, mutat
     assert not output.exists()
 
 
-@pytest.mark.parametrize("device", ["cpu", "mps"])
+@pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
 @pytest.mark.parametrize(
     "problem", [None, "class", "labels", "images", "nan", "weight_changed", "data_changed"]
 )
@@ -197,7 +197,7 @@ def test_compare_same_validation_only_with_failure_record(
     plan, dataset = learning_plan
     retrain.prepare(plan, dataset, "v2")
     manifest = dataset / "manifest.json"
-    value = json.loads(manifest.read_text())
+    value = json.loads(manifest.read_text(encoding="utf-8"))
     value["status"] = "ready"
     write_json(manifest, value)
     baseline, candidate = plan.parent / "old.pt", plan.parent / "new.pt"
@@ -225,12 +225,12 @@ def test_compare_same_validation_only_with_failure_record(
         def val(self, **options):
             self.callback(SimpleNamespace(dataloader=SimpleNamespace(dataset=Loaded())))
             calls.append(options)
-            spec = yaml.safe_load(Path(options["data"]).read_text())
+            spec = yaml.safe_load(Path(options["data"]).read_text(encoding="utf-8"))
             assert "test" not in spec and options["split"] == "val"
             if problem == "weight_changed":
                 self.path.write_bytes(b"changed")
             if problem == "data_changed":
-                value = json.loads(manifest.read_text())
+                value = json.loads(manifest.read_text(encoding="utf-8"))
                 value["dataset_version"] = "changed"
                 write_json(manifest, value)
             score = 0.7 if self.path == candidate else 0.5
@@ -242,7 +242,8 @@ def test_compare_same_validation_only_with_failure_record(
             )
 
     torch = SimpleNamespace(
-        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True))
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        cuda=SimpleNamespace(is_available=lambda: True),
     )
     mps_validator = object()
     monkeypatch.setitem(
@@ -262,25 +263,29 @@ def test_compare_same_validation_only_with_failure_record(
     if problem:
         with pytest.raises(ValueError):
             retrain.compare(args)
-        assert json.loads((args.output / "comparison.json").read_text())["status"] == "failed"
+        assert (
+            json.loads((args.output / "comparison.json").read_text(encoding="utf-8"))["status"]
+            == "failed"
+        )
     else:
         report = retrain.compare(args)
         assert report["status"] == "completed" and report["test_evaluated"] is False
         assert report["delta"]["map50"] == pytest.approx(0.2)
         assert report["models"]["baseline"]["sha256"] == sha256(baseline)
         assert len(calls) == 2 and calls[0]["data"] == calls[1]["data"]
+        assert calls[0]["device"] == ("0" if device == "cuda" else device)
         assert calls[0]["validator"] is (mps_validator if device == "mps" else None)
         with pytest.raises(ValueError, match="이미"):
             retrain.compare(args)
 
 
-def test_cli_compare_defaults_to_mps_and_invalid_json_fails(learning_plan, monkeypatch):
+def test_cli_compare_defaults_to_auto_and_invalid_json_fails(learning_plan, monkeypatch):
     seen = []
     monkeypatch.setattr(retrain, "compare", lambda args: seen.append(args.device) or {})
     args = ["compare"]
     for name in ("data", "manifest", "baseline", "candidate", "output"):
         args += [f"--{name}", name]
-    assert retrain.main(args) == 0 and seen == ["mps"]
+    assert retrain.main(args) == 0 and seen == ["auto"]
     plan, output = learning_plan
     write_json(plan, [])
     assert (
@@ -297,7 +302,7 @@ def test_annotations_changed_during_prepare_are_rejected(learning_plan, monkeypa
     def read_then_change(path):
         value = original(path)
         if path.name == "annotations.json":
-            path.write_text(path.read_text() + "\n")
+            path.write_text(path.read_text(encoding="utf-8") + "\n")
         return value
 
     monkeypatch.setattr(retrain, "read_json", read_then_change)
@@ -314,7 +319,7 @@ def test_source_json_changed_during_copy_is_rejected(learning_plan, monkeypatch,
 
     def copy_then_change(before, after):
         original(before, after)
-        source.write_text(source.read_text() + "\n")
+        source.write_text(source.read_text(encoding="utf-8") + "\n")
 
     monkeypatch.setattr(retrain.shutil, "copyfile", copy_then_change)
     with pytest.raises(ValueError, match="변경"):
@@ -322,14 +327,14 @@ def test_source_json_changed_during_copy_is_rejected(learning_plan, monkeypatch,
     assert output.exists() and not (output / "manifest.json").exists()
 
 
-@pytest.mark.parametrize("failure", ["runtime", "mps"])
+@pytest.mark.parametrize("failure", ["runtime", "mps", "cuda"])
 def test_cli_compare_records_setup_failure_and_preserves_output(
     learning_plan, monkeypatch, capsys, failure
 ):
     plan, dataset = learning_plan
     retrain.prepare(plan, dataset, "v2")
     manifest = dataset / "manifest.json"
-    value = json.loads(manifest.read_text())
+    value = json.loads(manifest.read_text(encoding="utf-8"))
     value["status"] = "ready"
     write_json(manifest, value)
     baseline = plan.parent / "baseline.pt"
@@ -339,13 +344,15 @@ def test_cli_compare_records_setup_failure_and_preserves_output(
         if failure == "runtime":
             raise ImportError("training runtime missing")
         torch = SimpleNamespace(
-            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False))
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+            cuda=SimpleNamespace(is_available=lambda: False),
         )
         return torch, None
 
     monkeypatch.setattr(retrain, "prepare_runtime", runtime)
     output = plan.parent / "comparison"
-    args = ["compare"]
+    device = "cuda" if failure == "cuda" else "mps"
+    args = ["compare", "--device", device]
     for key, path in {
         "data": dataset / "dataset.yaml",
         "manifest": manifest,
@@ -356,10 +363,12 @@ def test_cli_compare_records_setup_failure_and_preserves_output(
         args += [f"--{key}", str(path)]
     assert retrain.main(args) == 1
     report_path = output / "comparison.json"
-    report = json.loads(report_path.read_text())
+    report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "failed"
-    assert report["requested_device"] == "mps" and report["device"] is None
-    expected = "training runtime missing" if failure == "runtime" else "MPS is unavailable"
+    assert report["requested_device"] == device and report["device"] is None
+    expected = (
+        "training runtime missing" if failure == "runtime" else f"{device.upper()} is unavailable"
+    )
     assert expected in report["error"] and expected in capsys.readouterr().out
     before = report_path.read_bytes()
     assert retrain.main(args) == 1

@@ -175,7 +175,7 @@ def test_camera_menu_defaults_to_mac_and_preserves_usb_identity(monkeypatch, cam
     app.refresh_cameras()
 
 
-@pytest.mark.parametrize("device", ["mps", "cpu"])
+@pytest.mark.parametrize("device", ["mps", "cpu", "cuda"])
 def test_camera_start_passes_selected_identity_and_locks_menu(monkeypatch, camera_controls, device):
     import tools.camera_gui as gui
 
@@ -494,7 +494,7 @@ def test_fast_matching_uses_one_native_scale_even_below_early_return_score(monke
     assert calls == [(80, 100)]
 
 
-@pytest.mark.parametrize("device", ["cpu", "mps"])
+@pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
 def test_manual_model_requires_pinned_hash_and_never_downloads(monkeypatch, tmp_path, device):
     import hashlib
 
@@ -513,7 +513,8 @@ def test_manual_model_requires_pinned_hash_and_never_downloads(monkeypatch, tmp_
         sys.modules,
         "tools.manual_vit",
         SimpleNamespace(
-            MPSVitTracker=lambda p, threshold: calls.append((p, threshold)) or "mps-tracker"
+            TorchVitTracker=lambda p, threshold, selected: calls.append((p, threshold, selected))
+            or "gpu-tracker"
         ),
     )
     monkeypatch.setitem(
@@ -524,9 +525,9 @@ def test_manual_model_requires_pinned_hash_and_never_downloads(monkeypatch, tmp_
             TrackerVit_create=lambda p: calls.append(p) or "tracker",
         ),
     )
-    if device == "mps":
-        assert create_manual_tracker(0.65, device) == "mps-tracker"
-        assert calls == [(path, 0.65)]
+    if device in ("mps", "cuda"):
+        assert create_manual_tracker(0.65, device) == "gpu-tracker"
+        assert calls == [(path, 0.65, device)]
     else:
         assert create_manual_tracker(0.65, device) == "tracker"
         assert params.net == str(path) and params.tracking_score_threshold == 0.65
@@ -742,7 +743,7 @@ def test_manual_worker_motion_recovery_and_reset(monkeypatch, manual_appearance,
 
 
 @pytest.mark.parametrize("reset", ["clear", "geometry"])
-@pytest.mark.parametrize("device", ["cpu", "mps"])
+@pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
 def test_manual_worker_uses_vit_and_clears_its_state(monkeypatch, manual_appearance, reset, device):
     import time
 
@@ -1437,7 +1438,7 @@ def test_gui_saves_metadata_and_evaluates_complete_truth(monkeypatch, camera_con
         sys.modules, "tkinter", SimpleNamespace(filedialog=dialogs, messagebox=messages)
     )
     app.save_metrics()
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     assert record["status"] == "completed" and record["frames"][0]["box"] == [10, 10, 30, 30]
     assert "frame" not in record["frames"][0]  # No image arrays are serialized.
     app.evaluate_metrics()
@@ -1495,7 +1496,7 @@ def test_opt_in_collection_dialog_and_finish_on_exit(monkeypatch, camera_control
     app.root = SimpleNamespace(destroy=lambda: finishes.append(True))
     app.close()
     path = session.collector.root / "measurement.json"
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     assert record["status"] == "completed" and record["session_id"] == session.metrics.session_id
     assert record["settings"]["collection_path"] == str(session.collector.root)
     assert session.stop.is_set() and finishes == [True]
@@ -1591,7 +1592,35 @@ def test_region_matching_preserves_far_crop_pixels_and_maps_broad_search(monkeyp
     assert searches[-1] == ((540, 960), (40, 50))
 
 
-@pytest.mark.parametrize("device", ["mps", "cpu"])
+@pytest.mark.parametrize("device", ["cuda", "mps"])
+def test_yolo_unavailable_gpu_stops_before_model_loading(monkeypatch, device):
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: False),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ultralytics",
+        SimpleNamespace(YOLO=lambda path: pytest.fail("Unavailable GPU must not load the model")),
+    )
+    session = CameraSession.__new__(CameraSession)
+    session.model_path, session.device = "trusted-local.pt", device
+    session.metrics, session.errors, session.stop = (
+        SessionMetrics(),
+        queue.Queue(),
+        threading.Event(),
+    )
+    session.process()
+    assert session.stop.is_set()
+    assert device.upper() in session.errors.get_nowait()
+    assert session.metrics.error and device.upper() in session.metrics.error
+
+
+@pytest.mark.parametrize("device", ["mps", "cpu", "cuda"])
 def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, device):
     import time
 
@@ -1606,7 +1635,7 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     calls = []
 
     def predict(crop, **kwargs):
-        assert kwargs["device"] == device
+        assert kwargs["device"] == ("0" if device == "cuda" else device)
         calls.append(crop.shape[:2])
         x, y = crop.offset
         coords = [[1600 - x, 800 - y, 1620 - x, 820 - y]]
@@ -1616,6 +1645,14 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
 
         return [SimpleNamespace(boxes=SimpleNamespace(xyxy=tensor(coords), conf=tensor([0.9])))]
 
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: True),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        ),
+    )
     monkeypatch.setitem(
         sys.modules,
         "ultralytics",

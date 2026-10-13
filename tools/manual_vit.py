@@ -1,48 +1,56 @@
-"""Run the pinned OpenCV Zoo ViT model on MPS; preprocessing follows OpenCV 5.0."""
+"""Run the pinned OpenCV Zoo ViT model on CUDA/MPS; preprocessing follows OpenCV 5.0."""
 
 import math
 import warnings
 from functools import lru_cache
 
 
-@lru_cache(maxsize=1)
-def _mps_model(model_path):
+@lru_cache(maxsize=2)
+def _torch_model(model_path, device):
     import torch
 
     try:
+        import onnx
         from onnx2torch import convert
     except ImportError as exc:
-        raise ValueError(
-            "수동 MPS 패키지가 없습니다. requirements-macos.lock.txt로 설치하세요."
-        ) from exc
-    # Repeated tracing retains MPS allocations; reuse only the stateless pinned network.
+        raise ValueError("수동 GPU 패키지가 없습니다. 운영체제별 설치 안내를 확인하세요.") from exc
+    # Reuse the stateless pinned network separately for each GPU backend.
     with torch.inference_mode(), warnings.catch_warnings():
         warnings.simplefilter("ignore", torch.jit.TracerWarning)
         warnings.filterwarnings("ignore", message="Using a non-tuple sequence")
-        model = convert(model_path).eval()
+        # A loaded model avoids onnx2torch's Windows locked temporary-file path.
+        model = convert(onnx.load(model_path)).eval()
         samples = (torch.zeros(1, 3, 128, 128), torch.zeros(1, 3, 256, 256))
         # Fixed shapes fold shape/slice metadata without GPU synchronizations.
-        model = torch.jit.freeze(torch.jit.trace(model, samples).eval().to("mps"))
-        gpu_samples = tuple(sample.to("mps") for sample in samples)
+        model = torch.jit.freeze(torch.jit.trace(model, samples).eval().to(device))
+        gpu_samples = tuple(sample.to(device) for sample in samples)
         # Later JIT optimization must finish before the first live observation.
         for _ in range(3):
             model(*gpu_samples)
-        torch.mps.synchronize()
+        getattr(torch, device).synchronize()
     return model
 
 
-class MPSVitTracker:
-    def __init__(self, model_path, threshold):
+class TorchVitTracker:
+    def __init__(self, model_path, threshold, device="mps"):
         import torch
 
-        if not torch.backends.mps.is_available():
-            raise ValueError("MPS를 사용할 수 없습니다. 장치를 cpu로 선택해 다시 시작하세요.")
+        if device not in ("cuda", "mps"):
+            raise ValueError("수동 GPU 추적 장치는 cuda 또는 mps를 선택하세요.")
+        available = (
+            torch.cuda.is_available() if device == "cuda" else torch.backends.mps.is_available()
+        )
+        if not available:
+            raise ValueError(
+                f"{device.upper()}를 사용할 수 없습니다. 장치를 cpu로 선택해 다시 시작하세요."
+            )
+        self.device = device
         self.threshold, self.score, self.rect = threshold, 0.0, None
-        self.model = _mps_model(str(model_path))
-        self.mean = torch.tensor((0.485, 0.456, 0.406), device="mps").view(1, 3, 1, 1)
+        self.model = _torch_model(str(model_path), device)
+        self.mean = torch.tensor((0.485, 0.456, 0.406), device=device).view(1, 3, 1, 1)
         # OpenCV computes 1/Scalar as conjugate/norm, not channel-wise division.
         norm = 0.229**2 + 0.224**2 + 0.225**2
-        self.scale = torch.tensor((0.229 / norm, -0.224 / norm, -0.225 / norm), device="mps").view(
+        self.scale = torch.tensor((0.229 / norm, -0.224 / norm, -0.225 / norm), device=device).view(
             1, 3, 1, 1
         )
         hann = [0.5 * (1 - math.cos(2 * math.pi * (i + 1) / 17)) for i in range(16)]
@@ -68,7 +76,9 @@ class MPSVitTracker:
             crop[top - y0 : bottom - y0, left - x0 : right - x0] = frame[top:bottom, left:right]
         resized = cv2.resize(crop, (size, size))
         # OpenCV's pinned tracker normalizes BGR without swapping channels.
-        tensor = torch.from_numpy(resized.transpose(2, 0, 1).copy()).to("mps", dtype=torch.float32)
+        tensor = torch.from_numpy(resized.transpose(2, 0, 1).copy()).to(
+            self.device, dtype=torch.float32
+        )
         return (tensor.unsqueeze(0) / 255 - self.mean) * self.scale, side, (x0, y0)
 
     def init(self, frame, box):

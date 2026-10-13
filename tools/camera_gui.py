@@ -363,16 +363,16 @@ def track_motion(before, frame, box, threshold):
 
 def create_manual_tracker(threshold, device="cpu"):
     """Use the pinned local model, with no network access or dependency changes."""
-    if device not in ("cpu", "mps"):
-        raise ValueError("수동 추적 장치는 cpu 또는 mps를 선택하세요.")
+    if device not in ("cpu", "cuda", "mps"):
+        raise ValueError("수동 추적 장치는 cpu, cuda 또는 mps를 선택하세요.")
     if not MANUAL_MODEL.is_file():
         return None
     if hashlib.sha256(MANUAL_MODEL.read_bytes()).hexdigest() != MANUAL_MODEL_SHA256:
         raise ValueError("수동 ViT 모델의 해시가 다릅니다. models/vittrack.md를 확인하세요.")
-    if device == "mps":
-        from tools.manual_vit import MPSVitTracker
+    if device in ("cuda", "mps"):
+        from tools.manual_vit import TorchVitTracker
 
-        return MPSVitTracker(MANUAL_MODEL, threshold)
+        return TorchVitTracker(MANUAL_MODEL, threshold, device)
     import cv2
 
     params = cv2.TrackerVit_Params()
@@ -542,8 +542,12 @@ class CameraSession:
         try:
             model, drone_classes = None, []
             if self.model_path:
+                import torch
                 from ultralytics import YOLO
 
+                from tools.train import select_device
+
+                inference_device = select_device(self.device, torch)
                 model = YOLO(self.model_path)
                 if model.task != "detect":
                     raise ValueError("드론 객체 검출용 모델을 선택하세요.")
@@ -787,7 +791,7 @@ class CameraSession:
                         crop,
                         conf=self.threshold,
                         classes=drone_classes,
-                        device=self.device,
+                        device=inference_device,
                         imgsz=640,
                         verbose=False,
                     )[0]
@@ -893,7 +897,7 @@ class CameraGUI:
         self.mode = tk.StringVar(value="수동 지정")
         self.model = tk.StringVar()
         self.threshold = tk.StringVar(value="0.65")
-        self.device = tk.StringVar(value="mps")
+        self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
         self.resolution = tk.StringVar(value="1920×1080")
         self.capture_info = tk.StringVar(value="실제 입력: 대기 · 작은 대상 원본 크롭")
         ttk.Label(controls, text="카메라").grid(row=0, column=0)
@@ -922,7 +926,11 @@ class CameraGUI:
         )
         ttk.Entry(controls, textvariable=self.threshold, width=5).grid(row=1, column=4)
         ttk.Combobox(
-            controls, values=("mps", "cpu"), state="readonly", textvariable=self.device, width=5
+            controls,
+            values=("cuda", "mps", "cpu"),
+            state="readonly",
+            textvariable=self.device,
+            width=5,
         ).grid(row=1, column=5, padx=8)
         self.start_button = ttk.Button(controls, text="카메라 시작", command=self.start)
         self.start_button.grid(row=0, column=6, padx=4)
