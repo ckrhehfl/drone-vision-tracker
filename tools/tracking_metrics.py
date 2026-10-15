@@ -38,10 +38,10 @@ class SessionMetrics:
         while events and events[0] <= at - WINDOW_S:
             events.popleft()
 
-    def capture(self, captured, shape):
+    def capture(self, captured, shape, *, video_time_s=None):
         with self.lock:
             self._event("capture", captured)
-            # shortcut: retain metadata for 6000 frames, use shorter trials until file input exists.
+            # shortcut: retain 6000 frames in memory; stream metadata for longer evaluations.
             if len(self.frames) < MAX_RECORDS:
                 self.frames[captured] = {
                     "frame_id": self.counts["capture"],
@@ -53,6 +53,8 @@ class SessionMetrics:
                     "completed_s": None,
                     "method": None,
                 }
+                if video_time_s is not None:
+                    self.frames[captured]["video_time_s"] = video_time_s
                 return self.counts["capture"]
 
     def discard(self, reason, count=1):
@@ -184,6 +186,7 @@ def validate_box(value, width, height):
 
 def validate_record(record):
     from tools.camera_gui import MAX_AGE_S
+    from tools.training_data import is_sha256
 
     if (
         not isinstance(record, dict)
@@ -213,7 +216,22 @@ def validate_record(record):
         or performance["counts"]["capture"] != len(rows)
     ):
         raise ValueError("전체 수신 프레임이 기록에 포함되어야 합니다.")
-    previous_time = -1.0
+    settings = record.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ValueError("측정 설정은 JSON 객체여야 합니다.")
+    video_input = settings.get("source_type") == "video_test"
+    if video_input and (
+        settings.get("video_complete") is not True
+        or type(settings.get("video_frame_count")) is not int
+        or settings["video_frame_count"] != len(rows)
+        or not is_sha256(settings.get("video_sha256"))
+        or not is_sha256(settings.get("model_sha256"))
+        or settings.get("timestamp_source") != "opencv_pos_msec"
+    ):
+        raise ValueError(
+            "영상 테스트는 원본 식별과 전체 프레임 처리가 완료되어야 평가할 수 있습니다."
+        )
+    previous_time, previous_video_time = -1.0, -1.0
     for index, row in enumerate(rows, 1):
         if (
             not isinstance(row, dict)
@@ -234,6 +252,13 @@ def validate_record(record):
         ):
             raise ValueError("프레임 시간은 증가해야 하며 원본 영상 크기가 유효해야 합니다.")
         previous_time = timestamp
+        if video_input:
+            video_time = row.get("video_time_s")
+            if not _number(video_time) or video_time < 0 or video_time <= previous_video_time:
+                raise ValueError("원본 영상 시각은 유한하고 증가해야 합니다.")
+            if row.get("processed") is not True:
+                raise ValueError("영상 테스트의 모든 프레임을 처리해야 평가할 수 있습니다.")
+            previous_video_time = video_time
         if type(row.get("processed")) is not bool or "box" not in row:
             raise ValueError("처리 여부와 예측 박스가 필요합니다.")
         prediction = validate_box(row["box"], width, height)
@@ -241,7 +266,7 @@ def validate_record(record):
         if row["processed"]:
             if not _number(completed) or completed < timestamp:
                 raise ValueError("처리 완료 시각이 수신 시각보다 빠르거나 유효하지 않습니다.")
-            if prediction is not None and completed - timestamp > MAX_AGE_S:
+            if not video_input and prediction is not None and completed - timestamp > MAX_AGE_S:
                 raise ValueError("만료된 프레임의 박스는 유효한 예측으로 평가할 수 없습니다.")
         elif prediction is not None or completed is not None:
             raise ValueError("미처리 프레임에는 예측 박스·완료 시각이 없어야 합니다.")
@@ -261,13 +286,18 @@ def evaluate(record, truth, iou_threshold=0.5):
         for v in (record, truth)
     ):
         raise ValueError("지원하지 않는 평가 파일 버전입니다.")
+    rows = validate_record(record)
+    video_input = record.get("settings", {}).get("source_type") == "video_test"
+    same_video = video_input and truth.get("video_sha256") == record["settings"]["video_sha256"]
     if (
         not isinstance(record.get("session_id"), str)
         or not record["session_id"]
         or truth.get("session_id") != record["session_id"]
+        and not same_video
     ):
         raise ValueError("측정 기록과 정답의 session_id가 다릅니다.")
-    rows = validate_record(record)
+    if video_input and "video_sha256" in truth and not same_video:
+        raise ValueError("정답 파일의 원본 영상 SHA-256이 다릅니다.")
     labels = truth.get("frames")
     if not isinstance(labels, list):
         raise ValueError("정답 목록이 필요합니다.")
@@ -307,7 +337,11 @@ def evaluate(record, truth, iou_threshold=0.5):
             if pending is not None and correct:
                 pending.update(
                     reacquired_frame_id=index,
-                    delay_s=completed - rows[pending["start_frame_id"] - 1]["timestamp_s"],
+                    delay_s=(
+                        row["video_time_s"] - rows[pending["start_frame_id"] - 1]["video_time_s"]
+                        if video_input
+                        else completed - rows[pending["start_frame_id"] - 1]["timestamp_s"]
+                    ),
                 )
                 pending = None
             seen_visible = True
@@ -323,6 +357,7 @@ def evaluate(record, truth, iou_threshold=0.5):
         "session_id": record["session_id"],
         "iou_threshold": iou_threshold,
         "weighting": "all_captured_frames",
+        "time_basis": "video_time_s" if video_input else "host_monotonic",
         "frames": len(rows),
         "visible_frames": present,
         "matched_frames": matched,
@@ -353,7 +388,12 @@ def evaluation_text(result):
         f"배경 오인식 {result['background_false_box_frames']}/{result['background_frames']}장 · "
         f"전체 잘못된 박스 {result['false_box_frames']}장\n"
         f"재진입 성공률 {percent(result['reentry_success_rate'])} · 재획득 p50/p95 {latency}초\n"
-        "프레임 기준 평가이며 카메라 중앙 추종 성공률·mAP가 아닙니다."
+        + (
+            "재획득 시간: 원본 영상 시각 기준\n"
+            if result.get("time_basis") == "video_time_s"
+            else ""
+        )
+        + "프레임 기준 평가이며 카메라 중앙 추종 성공률·mAP가 아닙니다."
     )
 
 

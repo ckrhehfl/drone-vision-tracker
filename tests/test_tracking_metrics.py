@@ -61,6 +61,68 @@ def test_record_limit_is_explicit_and_does_not_stop_runtime_measurement(clock, m
 
 
 @pytest.fixture
+def video_trial(clock):
+    metrics = SessionMetrics(
+        {
+            "source_type": "video_test",
+            "video_complete": True,
+            "video_frame_count": 4,
+            "video_sha256": "a" * 64,
+            "model_sha256": "b" * 64,
+            "timestamp_source": "opencv_pos_msec",
+        }
+    )
+    target = [10, 10, 30, 30]
+    for index in range(4):
+        at = index * 100 + 0.1  # Includes long pauses and slow offline processing.
+        metrics.capture(at, (100, 100), video_time_s=index * 0.1)
+        metrics.processed(at, at, at + 2, target if index in (0, 3) else None, "YOLO")
+    clock[0] = 400
+    metrics.finish()
+    truth = {
+        "schema_version": 1,
+        "video_sha256": "a" * 64,
+        "frames": [{"frame_id": i + 1, "box": None if i == 1 else target} for i in range(4)],
+    }
+    return metrics.report(), truth
+
+
+def test_video_truth_reuses_exact_source_and_reentry_uses_media_time(video_trial):
+    record, truth = video_trial
+    result = evaluate(record, truth)
+    assert result["time_basis"] == "video_time_s"
+    assert result["reentry_delay_s"]["p95"] == pytest.approx(0.1)
+    assert result["tracking_success_rate"] == pytest.approx(2 / 3)
+    assert "원본 영상 시각 기준" in evaluation_text(result)
+    record["session_id"] = "another-model-run"
+    assert evaluate(record, truth)["matched_frames"] == 2
+
+
+@pytest.mark.parametrize(
+    "failure", ["partial", "count", "source", "time", "missing_time", "unprocessed", "wrong_video"]
+)
+def test_partial_or_unidentified_video_cannot_be_evaluated(video_trial, failure):
+    record, truth = video_trial
+    if failure == "partial":
+        record["settings"]["video_complete"] = False
+    elif failure == "count":
+        record["settings"]["video_frame_count"] += 1
+    elif failure == "source":
+        record["settings"]["video_sha256"] = "unknown"
+    elif failure == "time":
+        record["frames"][1]["video_time_s"] = 0
+    elif failure == "missing_time":
+        record["frames"][1].pop("video_time_s")
+    elif failure == "unprocessed":
+        record["frames"][1]["processed"] = False
+    else:
+        truth["session_id"] = record["session_id"]
+        truth["video_sha256"] = "c" * 64
+    with pytest.raises(ValueError):
+        evaluate(record, truth)
+
+
+@pytest.fixture
 def trial(clock):
     metrics = SessionMetrics({"device": "mps"})
     target, wrong = [10, 10, 30, 30], [60, 60, 80, 80]

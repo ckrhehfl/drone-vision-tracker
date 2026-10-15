@@ -134,6 +134,8 @@ def camera_controls():
         "evaluate_button",
         "collect_button",
         "video_button",
+        "test_video_button",
+        "pause_button",
     ):
         setattr(app, name, Control())
     for name, value in (
@@ -1776,3 +1778,287 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     assert result[1] == (1080, 1920)
     assert result[2] == (1600, 800, 1620, 820, 0.9)
     assert result[4] == target_crop(result[2], (1080, 1920))
+
+
+def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
+    monkeypatch, camera_controls, tmp_path
+):
+    import tools.camera_gui as gui
+
+    app, calls, errors = camera_controls, [], []
+    video, model = tmp_path / "드론.mp4", tmp_path / "best.pt"
+    video.touch()
+    model.touch()
+    app.model.set(str(model))
+    app.device.set("mps")
+    dialogs = SimpleNamespace(
+        askopenfilename=lambda **kw: str(video),
+        askdirectory=lambda **kw: pytest.fail("Video tests must never extract learning data"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(
+            filedialog=dialogs, messagebox=SimpleNamespace(showerror=lambda *a: errors.append(a))
+        ),
+    )
+
+    def start(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(
+            stop=threading.Event(),
+            paused=threading.Event(),
+            metrics=SessionMetrics({"source_type": "video_test"}),
+        )
+
+    monkeypatch.setattr(gui, "CameraSession", start)
+    app.test_video()
+    assert calls == [
+        ((None, str(model.resolve()), 0.25, "mps", (1920, 1080)), {"video_path": video.resolve()})
+    ]
+    assert not errors and app.mode.get() == "YOLO 자동 검출"
+    assert app.collect_button.options["state"] == "disabled"
+    assert app.test_video_button.options["state"] == app.video_button.options["state"] == "disabled"
+    assert app.pause_button.options["state"] == "normal"
+    app.collect_frames()
+    app.test_video()
+    assert len(calls) == 1
+    app.pause_video()
+    assert app.session.paused.is_set() and app.pause_button.options["text"] == "재생"
+    app.pause_video()
+    assert not app.session.paused.is_set()
+    app.session = None
+    dialogs.askopenfilename = lambda **kw: ""
+    app.test_video()
+    assert len(calls) == 1
+    dialogs.askopenfilename = lambda **kw: str(video)
+    app.model.set("")
+    app.test_video()
+    assert len(calls) == 1 and "로컬 드론 학습" in errors[0][1]
+
+
+@pytest.fixture
+def video_runtime(monkeypatch, tmp_path):
+    import time
+
+    import tools.camera_gui as gui
+
+    class Frame:
+        shape = (100, 100, 3)
+
+        def __getitem__(self, _slices):
+            return self
+
+    video, model = tmp_path / "드론.mp4", tmp_path / "best.pt"
+    video.write_bytes(b"unchanged video")
+    model.write_bytes(b"unchanged model")
+    control = {"opened": True, "expected": 3, "timestamps": [0, 1, 2], "released": 0}
+    sessions = []
+    real_clock, offset = time.monotonic, [0.0]
+    monkeypatch.setattr(gui.time, "monotonic", lambda: real_clock() + offset[0])
+
+    class Capture:
+        def __init__(self, path):
+            assert path == str(video)  # Never open an integer camera source.
+            self.index = 0
+
+        def isOpened(self):
+            return control["opened"]
+
+        def get(self, key):
+            return control["expected"] if key == 1 else control["timestamps"][self.index - 1]
+
+        def read(self):
+            self.index += 1
+            return (True, Frame()) if self.index <= len(control["timestamps"]) else (False, None)
+
+        def release(self):
+            control["released"] += 1
+
+    def predict(frame, **kwargs):
+        assert kwargs["device"] == "mps" and kwargs["classes"] == [0]
+        if control.get("inference_error"):
+            raise ValueError("inference failed")
+        offset[0] += 0.7  # Offline inference may exceed the live camera expiry cutoff.
+
+        def tensor(values):
+            return SimpleNamespace(cpu=lambda: SimpleNamespace(tolist=lambda: values))
+
+        return [
+            SimpleNamespace(
+                boxes=SimpleNamespace(xyxy=tensor([[10, 10, 30, 30]]), conf=tensor([0.9]))
+            )
+        ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        SimpleNamespace(VideoCapture=Capture, CAP_PROP_FRAME_COUNT=1, CAP_PROP_POS_MSEC=2),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True))),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ultralytics",
+        SimpleNamespace(
+            YOLO=lambda _: SimpleNamespace(task="detect", names={0: "drone"}, predict=predict)
+        ),
+    )
+    monkeypatch.setattr(gui, "FrameCollector", lambda *a: pytest.fail("No training side effects"))
+
+    def launch():
+        session = CameraSession(None, str(model), 0.25, "mps", video_path=video)
+        sessions.append(session)
+        return session
+
+    yield launch, control
+    for session in sessions:
+        session.stop.set()
+        for thread in session.threads:
+            thread.join(timeout=2)
+        assert not session.alive()
+
+
+def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_display(
+    video_runtime,
+):
+    launch, control = video_runtime
+    session = launch()
+    first = session.results.get(timeout=2)
+    assert len(first) == 8 and first[2] == (10, 10, 30, 30, 0.9)
+    assert first[7] == (0.0, 1)
+    session.paused.set()
+    session.video_displayed = first[0]
+    with pytest.raises(queue.Empty):
+        session.results.get(timeout=0.08)
+    session.paused.clear()
+    for _ in range(2):
+        result = session.results.get(timeout=2)
+        assert result[2] == first[2] and result[6].shape == (100, 100, 3)
+        assert not session.stop.is_set()  # EOF cannot discard the final result.
+        session.video_displayed = result[0]
+    for thread in session.threads:
+        thread.join(timeout=2)
+    session.finish()
+    record = session.metrics.report()
+    assert not session.alive() and control["released"] == 1 and session.errors.empty()
+    assert record["settings"]["video_complete"] is True
+    assert [r["video_time_s"] for r in record["frames"]] == [0, 0.001, 0.002]
+    assert all(r["processed"] and r["box"] == [10, 10, 30, 30] for r in record["frames"])
+    assert record["performance"]["counts"].get("stale_result", 0) == 0
+    assert session.previews.empty() and session.collector is None
+    with pytest.raises(ValueError, match="학습 수집과 별개"):
+        session.start_collection("unused")
+
+
+@pytest.mark.parametrize("failure", ["open", "count", "timestamp", "decode", "inference", "stop"])
+def test_video_errors_and_stop_release_file_and_never_claim_full_completion(video_runtime, failure):
+    launch, control = video_runtime
+    if failure == "open":
+        control["opened"] = False
+    elif failure == "count":
+        control["expected"] = float("nan")
+    elif failure == "timestamp":
+        control["timestamps"] = [0, 0]
+    elif failure == "decode":
+        control["expected"] = 4
+    elif failure == "inference":
+        control["inference_error"] = True
+    session = launch()
+    while not session.stop.is_set():
+        try:
+            result = session.results.get(timeout=0.1)
+            if failure == "stop":
+                session.stop.set()
+            session.video_displayed = result[0]
+        except queue.Empty:
+            assert session.stop.is_set() or session.alive()
+    for thread in session.threads:
+        thread.join(timeout=2)
+    session.finish()
+    assert control["released"] == 1 and not session.alive()
+    assert session.metrics.settings["video_complete"] is False
+    assert (session.metrics.error is None) == (failure == "stop")
+
+
+def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
+    monkeypatch, camera_controls
+):
+    import tools.camera_gui as gui
+
+    app = camera_controls
+    frame = SimpleNamespace(shape=(100, 100, 3))
+    frame.copy = lambda: frame
+    app.canvas = SimpleNamespace(
+        delete=lambda *a: None,
+        winfo_width=lambda: 100,
+        winfo_height=lambda: 100,
+        create_image=lambda *a, **kw: None,
+    )
+    app.root = SimpleNamespace(after=lambda *a: None)
+    app.capture_info = type(app.status)()
+    app.drag_start, app.selection_time = None, 0.0
+    metrics = SessionMetrics({"source_type": "video_test", "video_frame_count": 2})
+    captured = metrics.started + 0.1
+    metrics.capture(captured, frame.shape, video_time_s=0)
+    monkeypatch.setattr(gui.time, "monotonic", lambda: captured + 100)
+    session = SimpleNamespace(
+        metrics=metrics,
+        model_path="local.pt",
+        collector=None,
+        errors=queue.Queue(),
+        results=queue.Queue(),
+        previews=queue.Queue(),
+        stop=threading.Event(),
+        paused=threading.Event(),
+        video_timestamp=0,
+        video_displayed=0,
+        alive=lambda: False,
+        finish=metrics.finish,
+    )
+    session.results.put((captured, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (0, 1)))
+    app.session = session
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        SimpleNamespace(
+            drawMarker=lambda *a: None,
+            resize=lambda *a, **kw: frame,
+            cvtColor=lambda *a: frame,
+            MARKER_CROSS=0,
+            INTER_AREA=0,
+            COLOR_BGR2RGB=0,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PIL",
+        SimpleNamespace(
+            Image=SimpleNamespace(fromarray=lambda x: x),
+            ImageTk=SimpleNamespace(PhotoImage=lambda x: x),
+        ),
+    )
+    app.poll()
+    assert session.video_displayed == captured and app.frame is frame
+    # The next frame is in inference; its capture progress must not relabel the visible frame.
+    session.video_timestamp = 9.0
+    metrics.capture(captured + 1, frame.shape, video_time_s=9.0)
+    session.paused.set()
+    app.poll()
+    assert app.frame is frame and "일시정지" in app.status.get()
+    assert "0.00초" in app.capture_info.get() and "1/2프레임" in app.status.get()
+    session.results.put(
+        (captured + 1, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (9.0, 2))
+    )
+    app.poll()
+    assert "9.00초" in app.capture_info.get() and "2/2프레임" in app.status.get()
+    session.metrics.settings["video_complete"] = True
+    session.stop.set()
+    app.poll()
+    assert app.session is None and "영상 테스트 완료" in app.status.get()
+    assert app.test_video_button.options["state"] == "normal"
+    assert app.start_button.options["state"] == "disabled"  # Still no camera connected.
+    assert app.pause_button.options["state"] == "disabled"
