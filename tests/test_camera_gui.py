@@ -1928,7 +1928,8 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
     launch, control = video_runtime
     session = launch()
     first = session.results.get(timeout=2)
-    assert len(first) == 7 and first[2] == (10, 10, 30, 30, 0.9)
+    assert len(first) == 8 and first[2] == (10, 10, 30, 30, 0.9)
+    assert first[7] == (0.0, 1)
     session.paused.set()
     session.video_displayed = first[0]
     with pytest.raises(queue.Empty):
@@ -2000,7 +2001,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     app.root = SimpleNamespace(after=lambda *a: None)
     app.capture_info = type(app.status)()
     app.drag_start, app.selection_time = None, 0.0
-    metrics = SessionMetrics({"source_type": "video_test", "video_frame_count": 1})
+    metrics = SessionMetrics({"source_type": "video_test", "video_frame_count": 2})
     captured = metrics.started + 0.1
     metrics.capture(captured, frame.shape, video_time_s=0)
     monkeypatch.setattr(gui.time, "monotonic", lambda: captured + 100)
@@ -2018,7 +2019,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         alive=lambda: False,
         finish=metrics.finish,
     )
-    session.results.put((captured, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame))
+    session.results.put((captured, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (0, 1)))
     app.session = session
     monkeypatch.setitem(
         sys.modules,
@@ -2042,9 +2043,18 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     )
     app.poll()
     assert session.video_displayed == captured and app.frame is frame
+    # The next frame is in inference; its capture progress must not relabel the visible frame.
+    session.video_timestamp = 9.0
+    metrics.capture(captured + 1, frame.shape, video_time_s=9.0)
     session.paused.set()
     app.poll()
     assert app.frame is frame and "일시정지" in app.status.get()
+    assert "0.00초" in app.capture_info.get() and "1/2프레임" in app.status.get()
+    session.results.put(
+        (captured + 1, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (9.0, 2))
+    )
+    app.poll()
+    assert "9.00초" in app.capture_info.get() and "2/2프레임" in app.status.get()
     session.metrics.settings["video_complete"] = True
     session.stop.set()
     app.poll()

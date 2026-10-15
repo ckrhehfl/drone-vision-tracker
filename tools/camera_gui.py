@@ -461,6 +461,7 @@ class CameraSession:
         self.paused = threading.Event()
         self.video_displayed = 0.0
         self.video_timestamp = 0.0
+        self.video_progress = (0.0, 0)
         self.threshold, self.device = threshold, device
         self.resolution = resolution
         self.metrics = SessionMetrics(
@@ -605,6 +606,7 @@ class CameraSession:
                 dispatched = time.monotonic()
                 self.video_timestamp, previous = timestamp, timestamp
                 decoded += 1
+                self.video_progress = (timestamp, decoded)
                 self.metrics.capture(dispatched, frame.shape, video_time_s=timestamp)
                 self.frames.put_nowait((dispatched, frame))
                 # GUI acknowledges this exact frame only after its result has been displayed.
@@ -942,7 +944,9 @@ class CameraSession:
                     int(
                         put_latest(
                             self.results,
-                            (*result_item, frame) if video_input else result_item,
+                            (*result_item, frame, self.video_progress)
+                            if video_input
+                            else result_item,
                         )
                     ),
                 )
@@ -984,6 +988,7 @@ class CameraGUI:
         self.video_results = queue.Queue(maxsize=1)
         self.drag_start, self.selection, self.photo = None, None, None
         self.result, self.selection_time = None, 0.0
+        self.video_progress = (0.0, 0)
         self.metrics = None
         self.display_scale = 1.0
         root.title("드론 카메라 추적 · 로컬 시험")
@@ -1453,6 +1458,7 @@ class CameraGUI:
                     self.result = session.results.get_nowait()
                     if video_input:
                         self.last_display, self.frame = self.result[0], self.result[6]
+                        self.video_progress = self.result[7]
                         self.result = self.result[:6]
                     if self.result[0] < self.selection_time:
                         self.result = None
@@ -1470,7 +1476,7 @@ class CameraGUI:
                     rendered = frame.copy()
                     h, w = frame.shape[:2]
                     self.capture_info.set(
-                        f"영상 원본 {w}×{h} · {session.video_timestamp:.2f}초"
+                        f"영상 원본 {w}×{h} · {self.video_progress[0]:.2f}초"
                         if video_input
                         else f"실제 {w}×{h} / 요청 {session.resolution[0]}×{session.resolution[1]}"
                         + (f" · 수동 {session.manual_engine}" if not session.model_path else "")
@@ -1533,7 +1539,7 @@ class CameraGUI:
                         processing += f" · 크롭 {x2 - x1}×{y2 - y1}"
                     if video_input:
                         state = "일시정지" if session.paused.is_set() else "재생"
-                        count = session.metrics.snapshot()["counts"].get("capture", 0)
+                        count = self.video_progress[1]
                         self.status.set(
                             f"영상 테스트 {state} · {count}/"
                             f"{session.metrics.settings['video_frame_count']}프레임 · "
