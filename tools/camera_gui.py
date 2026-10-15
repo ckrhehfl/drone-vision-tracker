@@ -991,127 +991,612 @@ class CameraGUI:
         self.video_progress = (0.0, 0)
         self.metrics = None
         self.display_scale = 1.0
-        root.title("드론 카메라 추적 · 로컬 시험")
-        root.geometry("1040x780")
-        root.minsize(800, 650)
-        controls = ttk.Frame(root, padding=12)
-        controls.pack(fill="x")
-        self.camera = tk.StringVar()
+        self.display_offset = (0, 0)
+        self.video_path = None
         self.cameras = {}
+        self.settings_widgets = []
+        self.mode_buttons = []
         default_model = installed_model()
+        self.camera = tk.StringVar()
+        self.source = tk.StringVar(value="camera")
+        self.page = tk.StringVar(value="tracking")
         self.mode = tk.StringVar(value="YOLO 자동 검출" if default_model else "수동 지정")
         self.model = tk.StringVar(value=str(default_model) if default_model else "")
         self.threshold = tk.StringVar(value="0.25" if default_model else "0.65")
         self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
         self.resolution = tk.StringVar(value="1920×1080")
-        self.capture_info = tk.StringVar(value="실제 입력: 대기 · 작은 대상 원본 크롭")
-        ttk.Label(controls, text="카메라").grid(row=0, column=0)
+        self.video_name = tk.StringVar(value="테스트할 동영상을 선택하세요")
+        self.capture_info = tk.StringVar(value="입력을 시작하면 실제 해상도를 확인할 수 있습니다.")
+        self.performance = tk.StringVar(value="수신 · 화면 · 추적 FPS와 지연은 시작 후 표시됩니다.")
+        self.status = tk.StringVar(value="입력을 선택하고 추적을 시작하세요.")
+        self.heading = tk.StringVar(value="드론 추적")
+        self.run_state = tk.StringVar(value="●  대기")
+        self.observation_state = tk.StringVar(value="●  입력 대기")
+        self.actual_resolution = tk.StringVar(value="—")
+        self.processing_time = tk.StringVar(value="—")
+        self.observed = tk.StringVar(value="—  미관측")
+        self.advanced_summary = tk.StringVar()
+        for variable in (self.threshold, self.device, self.resolution):
+            variable.trace_add("write", self.update_advanced_summary)
+        self.update_advanced_summary()
+
+        root.title("드론 비전 추적")
+        root.geometry(
+            f"{min(1440, root.winfo_screenwidth() - 60)}x{min(900, root.winfo_screenheight() - 80)}"
+        )
+        root.minsize(1080, 760)
+        root.configure(background="#f7f9fc")
+        root.option_add("*Font", ("Arial", 12))
+        style = ttk.Style(root)
+        style.theme_use("clam")
+        style.configure("TFrame", background="#f7f9fc")
+        style.configure("Card.TFrame", background="white")
+        style.configure("TLabel", background="white", foreground="#101c30")
+        style.configure("Muted.TLabel", foreground="#63728a", font=("Arial", 11))
+        style.configure("Section.TLabel", font=("Arial", 13, "bold"))
+        style.configure(
+            "TButton",
+            padding=(12, 10),
+            background="#f5f7fb",
+            foreground="#24344d",
+            bordercolor="#d8e0eb",
+            focusthickness=2,
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#e7eef9"), ("disabled", "#f1f4f8")],
+            foreground=[("disabled", "#a0aaba")],
+        )
+        style.configure(
+            "Primary.TButton",
+            background="#216bea",
+            foreground="white",
+            font=("Arial", 14, "bold"),
+            padding=(12, 14),
+            bordercolor="#216bea",
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#1857c4"), ("disabled", "#cfdbed")],
+            foreground=[("disabled", "#72839c")],
+        )
+        style.configure("TEntry", padding=9, fieldbackground="white", bordercolor="#d8e0eb")
+        style.configure(
+            "TCombobox",
+            padding=8,
+            fieldbackground="white",
+            background="#f5f7fb",
+            bordercolor="#d8e0eb",
+            arrowsize=14,
+        )
+        style.map("TCombobox", fieldbackground=[("readonly", "white")])
+
+        sidebar = tk.Frame(root, background="#182c43", width=190)
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_propagate(False)
+        tk.Label(
+            sidebar,
+            text="드론 비전 추적",
+            background="#182c43",
+            foreground="white",
+            font=("Arial", 20, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=20, pady=(35, 30))
+        for text, value in (("⊕   추적", "tracking"), ("▥   학습 · 평가", "learning")):
+            tk.Radiobutton(
+                sidebar,
+                text=text,
+                variable=self.page,
+                value=value,
+                command=self.show_page,
+                indicatoron=False,
+                anchor="w",
+                background="#182c43",
+                foreground="#d8e4f4",
+                selectcolor="#2266c9",
+                activebackground="#254567",
+                activeforeground="white",
+                borderwidth=0,
+                font=("Arial", 15, "bold"),
+                padx=18,
+                pady=17,
+                cursor="hand2",
+            ).pack(fill="x", padx=10, pady=5)
+        tk.Button(
+            sidebar,
+            text="종료",
+            command=self.close,
+            background="#182c43",
+            foreground="#dc2626",
+            activebackground="#254567",
+            activeforeground="#dc2626",
+            borderwidth=0,
+            pady=12,
+        ).pack(side="bottom", fill="x", padx=16, pady=16)
+        tk.Label(
+            sidebar,
+            text="로컬 영상 추적\n카메라 · 동영상",
+            background="#182c43",
+            foreground="#99adc7",
+            justify="left",
+            anchor="w",
+            font=("Arial", 11),
+        ).pack(side="bottom", fill="x", padx=22, pady=12)
+
+        root.columnconfigure(1, weight=1)
+        root.rowconfigure(0, weight=1)
+        content = tk.Frame(root, background="#f7f9fc")
+        content.grid(row=0, column=1, sticky="nsew", padx=22, pady=20)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(1, weight=1)
+        header = tk.Frame(content, background="#f7f9fc")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(4, 22))
+        tk.Label(
+            header,
+            textvariable=self.heading,
+            background="#f7f9fc",
+            foreground="#101c30",
+            font=("Arial", 28, "bold"),
+        ).pack(side="left")
+        self.state_badge = tk.Label(
+            header,
+            textvariable=self.run_state,
+            background="#e1f5ed",
+            foreground="#128257",
+            padx=15,
+            pady=8,
+            font=("Arial", 12, "bold"),
+        )
+        self.state_badge.pack(side="left", padx=18)
+
+        panel_container = ttk.Frame(content)
+        panel_container.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
+        self.panel_view = tk.Canvas(
+            panel_container, width=318, background="#f7f9fc", highlightthickness=0
+        )
+        self.panel_view.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        scrollbar = ttk.Scrollbar(panel_container, command=self.panel_view.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.panel_view.configure(yscrollcommand=scrollbar.set)
+        panel_stack = ttk.Frame(self.panel_view)
+        panel_window = self.panel_view.create_window(0, 0, window=panel_stack, anchor="nw")
+        panel_stack.bind(
+            "<Configure>",
+            lambda event: self.panel_view.configure(
+                width=panel_stack.winfo_reqwidth(), scrollregion=self.panel_view.bbox("all")
+            ),
+        )
+        self.panel_view.bind(
+            "<Configure>",
+            lambda event: self.panel_view.itemconfigure(panel_window, width=event.width),
+        )
+        self.tracking_panel = ttk.Frame(panel_stack)
+        self.tracking_panel.grid(row=0, column=0, sticky="new")
+        self.tracking_panel.columnconfigure(0, weight=1, minsize=318)
+        controls = tk.Frame(
+            self.tracking_panel,
+            background="white",
+            padx=16,
+            pady=16,
+            highlightbackground="#dfe6ef",
+            highlightthickness=1,
+        )
+        controls.grid(row=0, column=0, sticky="new")
+        controls.columnconfigure(0, weight=1)
+        ttk.Label(controls, text="입력", style="Section.TLabel").grid(
+            row=0, sticky="w", pady=(0, 10)
+        )
+        self.source_buttons = []
+        sources = tk.Frame(controls, background="#e4eaf2")
+        sources.grid(row=1, sticky="ew", pady=(0, 12))
+        for column, (text, value) in enumerate((("카메라", "camera"), ("동영상", "video"))):
+            button = tk.Radiobutton(
+                sources,
+                text=text,
+                variable=self.source,
+                value=value,
+                command=self.change_source,
+                indicatoron=False,
+                background="#e4eaf2",
+                foreground="#263851",
+                selectcolor="#216bea",
+                activebackground="#d6e3f9",
+                activeforeground="#101c30",
+                borderwidth=0,
+                pady=11,
+                font=("Arial", 12, "bold"),
+            )
+            button.grid(row=0, column=column, sticky="ew", padx=2, pady=2)
+            sources.columnconfigure(column, weight=1)
+            self.source_buttons.append(button)
+        self.camera_row = ttk.Frame(controls, style="Card.TFrame")
+        self.camera_row.grid(row=2, sticky="ew")
+        self.camera_row.columnconfigure(0, weight=1)
         self.camera_select = ttk.Combobox(
-            controls,
+            self.camera_row,
             state="readonly",
             textvariable=self.camera,
-            width=30,
+            width=18,
             postcommand=self.refresh_cameras,
         )
-        self.camera_select.grid(row=0, column=1, columnspan=4, sticky="ew", padx=8)
+        self.camera_select.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.refresh_button = ttk.Button(
-            controls, text="목록 새로고침", command=self.refresh_cameras
+            self.camera_row, text="↻ 새로고침", command=self.refresh_cameras
         )
-        self.refresh_button.grid(row=0, column=5, padx=4)
-        ttk.Label(controls, text="추적 방식").grid(row=1, column=0)
-        mode_select = ttk.Combobox(
-            controls,
-            values=("수동 지정", "YOLO 자동 검출"),
-            state="readonly",
-            textvariable=self.mode,
-            width=16,
+        self.refresh_button.grid(row=0, column=1)
+        self.video_row = ttk.Frame(controls, style="Card.TFrame")
+        self.video_row.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.video_row, textvariable=self.video_name, wraplength=270, style="Muted.TLabel"
+        ).grid(row=0, sticky="w", pady=(0, 8))
+        self.test_video_button = ttk.Button(
+            self.video_row, text="동영상 선택", command=self.choose_video
         )
-        mode_select.grid(row=1, column=1, padx=8)
-        mode_select.bind("<<ComboboxSelected>>", self.change_mode)
-        ttk.Label(controls, text="품질 임계값\n수동 0.65 / 자동 0.25").grid(
-            row=1, column=2, columnspan=2
+        self.test_video_button.grid(row=1, sticky="ew")
+        ttk.Label(controls, text="추적 방식", style="Section.TLabel").grid(
+            row=3, sticky="w", pady=(22, 10)
         )
-        ttk.Entry(controls, textvariable=self.threshold, width=5).grid(row=1, column=4)
-        ttk.Combobox(
-            controls,
-            values=("cuda", "mps", "cpu"),
-            state="readonly",
-            textvariable=self.device,
-            width=5,
-        ).grid(row=1, column=5, padx=8)
-        self.start_button = ttk.Button(controls, text="카메라 시작", command=self.start)
-        self.start_button.grid(row=0, column=6, padx=4)
-        ttk.Button(controls, text="정지", command=self.stop).grid(row=0, column=7)
-        ttk.Entry(controls, textvariable=self.model, width=50).grid(
-            row=2, column=0, columnspan=6, sticky="ew", pady=10
+        modes = tk.Frame(controls, background="#e4eaf2")
+        modes.grid(row=4, sticky="ew")
+        for column, (text, value) in enumerate(
+            (("자동 검출", "YOLO 자동 검출"), ("수동 지정", "수동 지정"))
+        ):
+            button = tk.Radiobutton(
+                modes,
+                text=text,
+                variable=self.mode,
+                value=value,
+                command=self.change_mode,
+                indicatoron=False,
+                background="#e4eaf2",
+                foreground="#263851",
+                selectcolor="#216bea",
+                activebackground="#d6e3f9",
+                activeforeground="#101c30",
+                borderwidth=0,
+                pady=11,
+                font=("Arial", 12, "bold"),
+            )
+            button.grid(row=0, column=column, sticky="ew", padx=2, pady=2)
+            modes.columnconfigure(column, weight=1)
+            self.settings_widgets.append(button)
+            self.mode_buttons.append(button)
+        ttk.Label(controls, text="드론 모델", style="Section.TLabel").grid(
+            row=5, sticky="w", pady=(22, 10)
         )
-        ttk.Button(controls, text="best.pt 선택", command=self.browse).grid(row=2, column=6)
-        ttk.Button(controls, text="대상 해제", command=self.clear).grid(row=2, column=7)
-        ttk.Label(controls, text="입력 해상도").grid(row=3, column=0)
-        ttk.Combobox(
-            controls,
-            values=("1920×1080", "1280×720", "640×480"),
-            state="readonly",
-            textvariable=self.resolution,
-            width=16,
-        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=4)
-        ttk.Label(controls, textvariable=self.capture_info, wraplength=380, justify="left").grid(
-            row=3, column=3, columnspan=5, sticky="w"
+        model_row = ttk.Frame(controls, style="Card.TFrame")
+        model_row.grid(row=6, sticky="ew")
+        model_row.columnconfigure(0, weight=1)
+        model_entry = ttk.Entry(model_row, textvariable=self.model, width=18)
+        model_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        browse_button = ttk.Button(model_row, text="선택", command=self.browse)
+        browse_button.grid(row=0, column=1)
+        self.settings_widgets.extend((model_entry, browse_button))
+        self.start_button = ttk.Button(
+            controls, text="▶  추적 시작", style="Primary.TButton", command=self.start_selected
+        )
+        self.start_button.grid(row=7, sticky="ew", pady=(22, 10))
+        actions = ttk.Frame(controls, style="Card.TFrame")
+        actions.grid(row=8, sticky="ew")
+        for column in range(2):
+            actions.columnconfigure(column, weight=1)
+        self.stop_button = ttk.Button(actions, text="■ 정지", command=self.stop, state="disabled")
+        self.stop_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.clear_button = ttk.Button(
+            actions, text="대상 해제", command=self.clear, state="disabled"
+        )
+        self.clear_button.grid(row=0, column=1, sticky="ew")
+        self.pause_button = ttk.Button(
+            controls, text="일시정지", command=self.pause_video, state="disabled"
+        )
+        self.pause_button.grid(row=9, sticky="ew", pady=(8, 0))
+
+        advanced = tk.Frame(
+            self.tracking_panel,
+            background="white",
+            padx=16,
+            pady=12,
+            highlightbackground="#dfe6ef",
+            highlightthickness=1,
+        )
+        advanced.grid(row=1, column=0, sticky="new", pady=(12, 0))
+        advanced.columnconfigure(0, weight=1)
+        self.advanced_button = ttk.Button(
+            advanced, text="›  고급 설정", command=self.toggle_advanced
+        )
+        self.advanced_button.grid(row=0, sticky="ew")
+        ttk.Label(
+            advanced, textvariable=self.advanced_summary, style="Muted.TLabel", wraplength=280
+        ).grid(row=1, sticky="w", pady=(8, 0))
+        self.advanced_fields = ttk.Frame(advanced, style="Card.TFrame")
+        self.advanced_fields.columnconfigure(1, weight=1)
+        for row, (label, variable, values) in enumerate(
+            (
+                ("품질 임계값", self.threshold, None),
+                ("처리 장치", self.device, ("cuda", "mps", "cpu")),
+                ("요청 해상도", self.resolution, ("1920×1080", "1280×720", "640×480")),
+            )
+        ):
+            ttk.Label(self.advanced_fields, text=label).grid(
+                row=row, column=0, sticky="w", padx=(0, 10), pady=4
+            )
+            widget = (
+                ttk.Combobox(
+                    self.advanced_fields,
+                    textvariable=variable,
+                    values=values,
+                    state="readonly",
+                    width=14,
+                )
+                if values
+                else ttk.Entry(self.advanced_fields, textvariable=variable, width=14)
+            )
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            self.settings_widgets.append(widget)
+        ttk.Label(
+            self.tracking_panel,
+            text="수동 지정은 영상에서 대상을 드래그하세요.\n"
+            "동영상 테스트는 자동 검출을 사용합니다.",
+            style="Muted.TLabel",
+            background="#f7f9fc",
+            wraplength=310,
+        ).grid(row=2, sticky="nw", pady=12)
+
+        self.learning_panel = tk.Frame(
+            panel_stack,
+            background="white",
+            padx=16,
+            pady=16,
+            highlightbackground="#dfe6ef",
+            highlightthickness=1,
+        )
+        self.learning_panel.columnconfigure(0, weight=1, minsize=284)
+        ttk.Label(self.learning_panel, text="학습 데이터", style="Section.TLabel").grid(
+            row=0, sticky="w"
         )
         ttk.Label(
-            root,
-            text="수동: 영상에서 드론을 드래그하세요. 자동: 로컬 드론 모델을 선택하세요. "
-            "학습 수집을 선택하면 원본 사진을 로컬 저장합니다.",
-            padding=8,
-        ).pack()
-        measurements = ttk.Frame(root, padding=(12, 4))
-        measurements.pack(fill="x")
+            self.learning_panel,
+            text="카메라 원본 사진을 수집하거나\n로컬 영상에서 학습용 프레임을 추출하세요.",
+            style="Muted.TLabel",
+            wraplength=284,
+        ).grid(row=1, sticky="w", pady=(10, 16))
         self.collect_button = ttk.Button(
-            measurements, text="학습 프레임 수집", command=self.collect_frames, state="disabled"
+            self.learning_panel,
+            text="학습 프레임 수집",
+            command=self.collect_frames,
+            state="disabled",
         )
-        self.collect_button.grid(row=0, column=0, sticky="w")
-        self.save_metrics_button = ttk.Button(
-            measurements, text="측정 기록 저장", command=self.save_metrics, state="disabled"
-        )
-        self.save_metrics_button.grid(row=0, column=1, padx=8)
-        self.evaluate_button = ttk.Button(
-            measurements, text="정답 파일로 평가", command=self.evaluate_metrics, state="disabled"
-        )
-        self.evaluate_button.grid(row=0, column=2)
+        self.collect_button.grid(row=2, sticky="ew", pady=4)
         self.video_button = ttk.Button(
-            measurements, text="학습용 영상 가져오기", command=self.import_video
+            self.learning_panel, text="학습용 영상 가져오기", command=self.import_video
         )
-        self.video_button.grid(row=0, column=3, padx=8)
-        playback = ttk.Frame(measurements)
-        playback.grid(row=1, column=0, columnspan=4, sticky="w", pady=6)
-        self.test_video_button = ttk.Button(playback, text="영상 테스트", command=self.test_video)
-        self.test_video_button.pack(side="left")
-        self.pause_button = ttk.Button(
-            playback, text="일시정지", command=self.pause_video, state="disabled"
+        self.video_button.grid(row=3, sticky="ew", pady=4)
+        ttk.Separator(self.learning_panel).grid(row=4, sticky="ew", pady=22)
+        ttk.Label(self.learning_panel, text="측정 · 평가", style="Section.TLabel").grid(
+            row=5, sticky="w"
         )
-        self.pause_button.pack(side="left", padx=8)
-        ttk.Label(playback, text="로컬 영상 재생·추적 · 학습과 별개").pack(side="left")
-        self.performance = tk.StringVar(
-            value="성능: 대기 · 속도와 품질 점수는 인식 정확도가 아닙니다."
+        ttk.Label(
+            self.learning_panel,
+            text="추적 정지 후 측정 기록을 저장하고\n같은 세션의 정답 파일로 평가하세요.",
+            style="Muted.TLabel",
+            wraplength=284,
+        ).grid(row=6, sticky="w", pady=(10, 16))
+        self.save_metrics_button = ttk.Button(
+            self.learning_panel, text="측정 기록 저장", command=self.save_metrics, state="disabled"
         )
-        ttk.Label(measurements, textvariable=self.performance, wraplength=750, justify="left").grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=4
+        self.save_metrics_button.grid(row=7, sticky="ew", pady=4)
+        self.evaluate_button = ttk.Button(
+            self.learning_panel,
+            text="정답 파일로 평가",
+            command=self.evaluate_metrics,
+            state="disabled",
         )
-        self.canvas = tk.Canvas(root, background="#111827", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True, padx=12)
+        self.evaluate_button.grid(row=8, sticky="ew", pady=4)
+        ttk.Label(
+            self.learning_panel,
+            text="수집·가져오기에서 선택한 폴더에만\n원본 사진을 저장합니다.\n"
+            "모델 학습은 기존 재학습 도구를 사용합니다.",
+            style="Muted.TLabel",
+            wraplength=284,
+        ).grid(row=9, sticky="w", pady=(20, 4))
+
+        preview = tk.Frame(content, background="#f7f9fc")
+        preview.grid(row=1, column=1, sticky="nsew")
+        preview.columnconfigure(0, weight=1)
+        preview.rowconfigure(0, weight=1)
+        viewport = tk.Frame(
+            preview, background="#101d30", highlightbackground="#dfe6ef", highlightthickness=1
+        )
+        viewport.grid(row=0, column=0, sticky="nsew")
+        self.canvas = tk.Canvas(viewport, background="#101d30", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self.draw_empty_preview)
         self.canvas.bind("<ButtonPress-1>", self.begin_selection)
         self.canvas.bind("<B1-Motion>", self.move_selection)
         self.canvas.bind("<ButtonRelease-1>", self.end_selection)
-        self.status = tk.StringVar(value="대기 · 시작 버튼을 누르면 카메라가 켜집니다.")
-        footer = ttk.Frame(root)
-        footer.pack(fill="x")
-        ttk.Button(footer, text="종료", command=self.close).pack(side="right", padx=12, pady=8)
-        ttk.Label(footer, textvariable=self.status, padding=12).pack(
-            side="left", fill="x", expand=True
+        self.preview_badge = tk.Label(
+            viewport,
+            textvariable=self.observation_state,
+            background="#20354c",
+            foreground="#c0d0e4",
+            padx=12,
+            pady=8,
+            font=("Arial", 11, "bold"),
         )
+        self.preview_badge.place(x=16, y=16)
+        stats = tk.Frame(
+            preview, background="white", highlightbackground="#dfe6ef", highlightthickness=1
+        )
+        stats.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for column, (label, variable) in enumerate(
+            (
+                ("실제 해상도", self.actual_resolution),
+                ("처리 시간", self.processing_time),
+                ("대상 관측", self.observed),
+            )
+        ):
+            stats.columnconfigure(column, weight=1, uniform="stat")
+            cell = tk.Frame(stats, background="white", padx=18, pady=13)
+            cell.grid(row=0, column=column, sticky="ew")
+            ttk.Label(cell, text=label, style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(cell, textvariable=variable, font=("Arial", 18, "bold")).pack(
+                anchor="w", pady=(6, 0)
+            )
+        ttk.Label(
+            preview, textvariable=self.capture_info, style="Muted.TLabel", background="#f7f9fc"
+        ).grid(row=2, sticky="w", pady=(10, 2))
+        performance_label = ttk.Label(
+            preview,
+            textvariable=self.performance,
+            style="Muted.TLabel",
+            background="#f7f9fc",
+            wraplength=600,
+            justify="left",
+        )
+        performance_label.grid(row=3, sticky="ew")
+        preview.bind(
+            "<Configure>",
+            lambda event: performance_label.configure(wraplength=max(200, event.width - 10)),
+        )
+        footer = ttk.Label(
+            content,
+            textvariable=self.status,
+            style="Muted.TLabel",
+            background="#f7f9fc",
+            wraplength=1000,
+            justify="left",
+        )
+        footer.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        content.bind("<Configure>", lambda event: footer.configure(wraplength=event.width))
+        pending = [panel_container]
+        while pending:
+            widget = pending.pop()
+            widget.bind("<MouseWheel>", self.scroll_controls)
+            widget.bind("<Button-4>", self.scroll_controls)
+            widget.bind("<Button-5>", self.scroll_controls)
+            pending.extend(widget.winfo_children())
         root.protocol("WM_DELETE_WINDOW", self.close)
+        self.update_segments()
         self.refresh_cameras()
         root.after(30, self.poll)
+
+    def show_page(self):
+        learning = self.page.get() == "learning"
+        self.heading.set("학습 · 평가" if learning else "드론 추적")
+        self.tracking_panel.grid_remove()
+        self.learning_panel.grid_remove()
+        panel = self.learning_panel if learning else self.tracking_panel
+        panel.grid(row=0, column=0, sticky="new")
+        self.panel_view.yview_moveto(0)
+
+    def scroll_controls(self, event):
+        self.panel_view.yview_scroll(-1 if event.num == 4 or event.delta > 0 else 1, "units")
+        return "break"
+
+    def update_advanced_summary(self, *_args):
+        self.advanced_summary.set(
+            f"임계값 {self.threshold.get()} · 장치 {self.device.get().upper()}\n"
+            f"요청 해상도 {self.resolution.get()}"
+        )
+
+    def toggle_advanced(self):
+        if self.advanced_fields.winfo_manager():
+            self.advanced_fields.grid_remove()
+            self.advanced_button.configure(text="›  고급 설정")
+        else:
+            self.advanced_fields.grid(row=2, sticky="ew", pady=(12, 0))
+            self.advanced_button.configure(text="⌄  고급 설정")
+
+    def change_source(self):
+        if self.session is not None or self.video_thread is not None:
+            return
+        self.camera_row.grid_remove()
+        self.video_row.grid_remove()
+        (self.video_row if self.source.get() == "video" else self.camera_row).grid(
+            row=2, sticky="ew"
+        )
+        self.update_segments()
+        self.update_start_button()
+
+    def update_segments(self):
+        for variable, buttons in (
+            (self.source, self.source_buttons),
+            (self.mode, self.mode_buttons),
+        ):
+            for button in buttons:
+                color = "white" if button.cget("value") == variable.get() else "#263851"
+                button.configure(foreground=color, activeforeground=color)
+
+    def update_start_button(self):
+        ready = self.video_path is not None if self.source.get() == "video" else bool(self.cameras)
+        self.start_button.configure(state="normal" if ready else "disabled")
+
+    def lock_settings(self, locked):
+        for widget in self.settings_widgets + self.source_buttons:
+            widget.configure(
+                state="disabled"
+                if locked
+                else "readonly"
+                if widget.winfo_class() == "TCombobox"
+                else "normal"
+            )
+
+    def choose_video(self):
+        from tkinter import filedialog
+
+        if self.session is not None or self.closing or self.video_thread is not None:
+            return
+        path = filedialog.askopenfilename(
+            title="추적 테스트용 로컬 드론 영상 선택 (학습하지 않음)",
+            filetypes=[("동영상", "*.mp4 *.mov *.avi *.mkv *.webm"), ("모든 파일", "*.*")],
+        )
+        if path:
+            self.video_path = Path(path).expanduser().resolve()
+            self.video_name.set(self.video_path.name)
+            self.source.set("video")
+            self.change_source()
+            self.status.set("동영상 선택 완료 · 추적 시작을 누르세요.")
+
+    def start_selected(self):
+        if self.source.get() == "video":
+            if self.video_path is None:
+                return
+            if self.mode.get() != "YOLO 자동 검출":
+                self.mode.set("YOLO 자동 검출")
+                self.change_mode()
+            self.start(video_path=self.video_path)
+        else:
+            self.start()
+
+    def draw_empty_preview(self, _event=None):
+        if self.frame is not None:
+            return
+        self.canvas.delete("empty")
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self.canvas.create_text(
+            width / 2, height / 2 - 30, text="⊕", fill="#59799c", font=("Arial", 46), tags="empty"
+        )
+        self.canvas.create_text(
+            width / 2,
+            height / 2 + 26,
+            text="추적할 영상을 기다리고 있습니다",
+            fill="#d9e5f4",
+            font=("Arial", 16, "bold"),
+            tags="empty",
+        )
+        self.canvas.create_text(
+            width / 2,
+            height / 2 + 58,
+            text="입력을 선택한 뒤 추적 시작을 누르세요",
+            fill="#819ab8",
+            font=("Arial", 11),
+            tags="empty",
+        )
+
+    def set_observation(self, text, color="#a9bdd6"):
+        self.observation_state.set(f"●  {text}")
+        self.preview_badge.configure(foreground=color)
+        self.observed.set("●  관측 중" if text == "대상 추적 중" else "—  미관측")
 
     def refresh_cameras(self):
         if self.session is not None or self.video_thread is not None:
@@ -1146,7 +1631,7 @@ class CameraGUI:
             if choice is not None
             else empty_label
         )
-        self.start_button.configure(state="normal" if devices else "disabled")
+        self.update_start_button()
 
     def browse(self):
         from tkinter import filedialog
@@ -1159,6 +1644,7 @@ class CameraGUI:
 
     def change_mode(self, _event=None):
         self.threshold.set("0.25" if self.mode.get() == "YOLO 자동 검출" else "0.65")
+        self.update_segments()
 
     def start(self, video_path=None):
         from tkinter import messagebox
@@ -1187,6 +1673,7 @@ class CameraGUI:
             self.result = None
             self.selection_time = time.monotonic()
             self.canvas.delete("all")
+            self.draw_empty_preview()
             if video_path is None:
                 self.session = CameraSession(
                     camera, model, threshold, self.device.get(), resolution
@@ -1207,6 +1694,13 @@ class CameraGUI:
             self.start_button.configure(state="disabled")
             self.camera_select.configure(state="disabled")
             self.refresh_button.configure(state="disabled")
+            self.lock_settings(True)
+            self.stop_button.configure(state="normal")
+            self.clear_button.configure(state="normal" if model is None else "disabled")
+            self.run_state.set("●  준비 중")
+            self.set_observation("입력 연결 중")
+            self.actual_resolution.set("—")
+            self.processing_time.set("—")
             self.status.set(
                 f"영상 테스트 준비 중 · {video_path.name}"
                 if video_path is not None
@@ -1219,10 +1713,16 @@ class CameraGUI:
         if self.session is not None:
             self.session.stop.set()
             self.status.set("정지 중 · 입력 해제 대기…")
+            self.run_state.set("●  정지 중")
+        self.stop_button.configure(state="disabled")
+        self.clear_button.configure(state="disabled")
         self.frame = None
         self.canvas.delete("all")
         self.drag_start = None
         self.result = None
+        self.set_observation("입력 대기")
+        self.processing_time.set("—")
+        self.draw_empty_preview()
 
     def collect_frames(self):
         from tkinter import filedialog, messagebox
@@ -1271,6 +1771,7 @@ class CameraGUI:
         else:
             session.paused.set()
         self.pause_button.configure(text="재생" if session.paused.is_set() else "일시정지")
+        self.run_state.set("●  일시정지" if session.paused.is_set() else "●  실행 중")
 
     def import_video(self):
         from tkinter import filedialog
@@ -1293,6 +1794,8 @@ class CameraGUI:
         self.video_button.configure(state="disabled")
         self.test_video_button.configure(state="disabled")
         self.start_button.configure(state="disabled")
+        self.lock_settings(True)
+        self.run_state.set("●  프레임 추출 중")
         self.status.set("동영상 프레임 추출 중 · 카메라 없이 로컬 파일을 읽습니다.")
         self.video_thread = threading.Thread(
             target=self.extract_video, args=(video, output), daemon=True
@@ -1320,6 +1823,8 @@ class CameraGUI:
             return
         self.video_button.configure(state="normal")
         self.test_video_button.configure(state="normal")
+        self.lock_settings(False)
+        self.run_state.set("●  대기")
         self.refresh_cameras()
         if error:
             self.status.set(f"동영상 가져오기 실패 · {output}")
@@ -1382,10 +1887,18 @@ class CameraGUI:
             self.selection_time = time.monotonic()
             put_latest(self.session.selections, None)
             self.result = None
+            self.set_observation("대상 지정 대기")
             self.status.set("대상 해제 · 드론을 다시 드래그하세요.")
 
     def begin_selection(self, event):
         if self.frame is not None and self.session and not self.session.model_path:
+            x, y = self.display_offset
+            h, w = self.frame.shape[:2]
+            if not (
+                x <= event.x < x + w * self.display_scale
+                and y <= event.y < y + h * self.display_scale
+            ):
+                return
             self.drag_start = (event.x, event.y)
             self.canvas.delete("selection")
             self.selection = self.canvas.create_rectangle(
@@ -1401,8 +1914,12 @@ class CameraGUI:
 
         if self.drag_start is None or self.frame is None or self.session is None:
             return
-        start = tuple(value / self.display_scale for value in self.drag_start)
-        end = (event.x / self.display_scale, event.y / self.display_scale)
+        x, y = self.display_offset
+        start = (
+            (self.drag_start[0] - x) / self.display_scale,
+            (self.drag_start[1] - y) / self.display_scale,
+        )
+        end = ((event.x - x) / self.display_scale, (event.y - y) / self.display_scale)
         height, width = self.frame.shape[:2]
         box = selection_box(start, end, width, height)
         if box:
@@ -1442,9 +1959,19 @@ class CameraGUI:
                     self.video_button.configure(state="normal")
                     self.test_video_button.configure(state="normal")
                     self.pause_button.configure(state="disabled", text="일시정지")
-                    self.start_button.configure(state="normal" if self.cameras else "disabled")
+                    self.update_start_button()
                     self.camera_select.configure(state="readonly")
                     self.refresh_button.configure(state="normal")
+                    self.lock_settings(False)
+                    self.stop_button.configure(state="disabled")
+                    self.clear_button.configure(state="disabled")
+                    self.run_state.set("●  오류" if session.metrics.error else "●  정지")
+                    self.set_observation("입력 종료")
+                    self.frame = None
+                    self.result = None
+                    self.processing_time.set("—")
+                    self.canvas.delete("all")
+                    self.draw_empty_preview()
                     if video_input and session.metrics.settings.get("video_complete"):
                         self.status.set("영상 테스트 완료 · 측정 기록 저장 / 정답 파일로 평가 가능")
                     elif self.status.get().startswith("정지 중"):
@@ -1475,6 +2002,9 @@ class CameraGUI:
                     frame = self.frame
                     rendered = frame.copy()
                     h, w = frame.shape[:2]
+                    self.actual_resolution.set(f"{w}×{h}")
+                    paused = video_input and session.paused.is_set()
+                    self.run_state.set("●  일시정지" if paused else "●  실행 중")
                     self.capture_info.set(
                         f"영상 원본 {w}×{h} · {self.video_progress[0]:.2f}초"
                         if video_input
@@ -1492,6 +2022,13 @@ class CameraGUI:
                     else:
                         observation = observation_for_preview(self.result, captured, (h, w), now)
                     detection = observation[2] if observation else None
+                    self.processing_time.set(
+                        f"{observation[3] * 1000:.0f}ms" if observation else "—"
+                    )
+                    self.set_observation(
+                        "대상 추적 중" if detection else "대상 미관측",
+                        "#46df98" if detection else "#a9bdd6",
+                    )
                     cv2.drawMarker(
                         rendered, (w // 2, h // 2), (255, 255, 255), cv2.MARKER_CROSS, 20, 1
                     )
@@ -1529,10 +2066,14 @@ class CameraGUI:
                     rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
                     self.photo = ImageTk.PhotoImage(Image.fromarray(rgb))
                     self.canvas.delete("all")
-                    self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+                    self.display_offset = (
+                        (self.canvas.winfo_width() - size[0]) // 2,
+                        (self.canvas.winfo_height() - size[1]) // 2,
+                    )
+                    self.canvas.create_image(*self.display_offset, anchor="nw", image=self.photo)
                     session.metrics.displayed(captured, time.monotonic())
                     processing = (
-                        f" · 추적 처리 {self.result[3] * 1000:.0f}ms" if self.result else ""
+                        f" · 추적 처리 {observation[3] * 1000:.0f}ms" if observation else ""
                     )
                     if observation and observation[4] != (0, 0, w, h):
                         x1, y1, x2, y2 = observation[4]
@@ -1552,6 +2093,10 @@ class CameraGUI:
                 elif age > MAX_AGE_S:
                     self.frame = None
                     self.canvas.delete("all")
+                    self.set_observation("새 영상 대기")
+                    self.run_state.set("●  입력 대기")
+                    self.processing_time.set("—")
+                    self.draw_empty_preview()
                     self.status.set("새 영상 대기 · 대상 관측 무효")
             self.performance.set(performance_text(session.metrics.snapshot()))
             if session.collector is not None:

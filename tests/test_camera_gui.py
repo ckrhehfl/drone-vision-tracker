@@ -5,6 +5,7 @@ import queue
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +124,11 @@ def camera_controls():
     app.video_results = queue.Queue(maxsize=1)
     app.metrics = None
     app.session, app.cameras, app.frame, app.result = None, {}, None, None
+    app.settings_widgets, app.source_buttons = [], []
+    app.mode_buttons = []
+    app.panel_view = SimpleNamespace(yview_moveto=lambda value: None)
+    app.video_path = None
+    app.display_offset, app.display_scale = (0, 0), 1.0
     for name in (
         "camera",
         "status",
@@ -136,6 +142,17 @@ def camera_controls():
         "video_button",
         "test_video_button",
         "pause_button",
+        "stop_button",
+        "clear_button",
+        "run_state",
+        "observation_state",
+        "actual_resolution",
+        "processing_time",
+        "observed",
+        "preview_badge",
+        "video_name",
+        "heading",
+        "advanced_summary",
     ):
         setattr(app, name, Control())
     for name, value in (
@@ -144,9 +161,16 @@ def camera_controls():
         ("model", ""),
         ("device", "cpu"),
         ("resolution", "1920×1080"),
+        ("source", "camera"),
+        ("page", "tracking"),
     ):
         setattr(app, name, Control(value))
-    app.canvas = SimpleNamespace(delete=lambda *args: None)
+    app.canvas = SimpleNamespace(
+        delete=lambda *args: None,
+        winfo_width=lambda: 640,
+        winfo_height=lambda: 480,
+        create_text=lambda *args, **kwargs: None,
+    )
     return app
 
 
@@ -1997,6 +2021,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         winfo_width=lambda: 100,
         winfo_height=lambda: 100,
         create_image=lambda *a, **kw: None,
+        create_text=lambda *a, **kw: None,
     )
     app.root = SimpleNamespace(after=lambda *a: None)
     app.capture_info = type(app.status)()
@@ -2043,12 +2068,16 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     )
     app.poll()
     assert session.video_displayed == captured and app.frame is frame
+    assert app.actual_resolution.get() == "100×100"
+    assert app.processing_time.get() == "1000ms"
+    assert app.observed.get() == "—  미관측"
     # The next frame is in inference; its capture progress must not relabel the visible frame.
     session.video_timestamp = 9.0
     metrics.capture(captured + 1, frame.shape, video_time_s=9.0)
     session.paused.set()
     app.poll()
     assert app.frame is frame and "일시정지" in app.status.get()
+    assert app.run_state.get() == "●  일시정지"
     assert "0.00초" in app.capture_info.get() and "1/2프레임" in app.status.get()
     session.results.put(
         (captured + 1, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (9.0, 2))
@@ -2062,3 +2091,168 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     assert app.test_video_button.options["state"] == "normal"
     assert app.start_button.options["state"] == "disabled"  # Still no camera connected.
     assert app.pause_button.options["state"] == "disabled"
+    assert app.processing_time.get() == "—" and app.observed.get() == "—  미관측"
+    assert app.run_state.get() == "●  정지"
+
+
+def test_source_selection_enables_video_start_without_a_camera(camera_controls):
+    app, visible = camera_controls, []
+    app.camera_row = SimpleNamespace(
+        grid_remove=lambda: visible.append("hide-camera"),
+        grid=lambda **kw: visible.append("camera"),
+    )
+    app.video_row = SimpleNamespace(
+        grid_remove=lambda: visible.append("hide-video"), grid=lambda **kw: visible.append("video")
+    )
+    app.source.set("video")
+    app.change_source()
+    assert visible[-1] == "video" and app.start_button.options["state"] == "disabled"
+    app.video_path = Path("local.mp4")
+    app.change_source()
+    assert app.start_button.options["state"] == "normal"
+    app.source.set("camera")
+    app.change_source()
+    assert visible[-1] == "camera" and app.start_button.options["state"] == "disabled"
+    app.cameras["usb"] = {"id": "usb"}
+    app.change_source()
+    assert app.start_button.options["state"] == "normal"
+    app.session = object()
+    before = visible.copy()
+    app.change_source()
+    assert visible == before
+
+
+def test_choose_video_prepares_selection_without_starting_tracking(
+    monkeypatch, camera_controls, tmp_path
+):
+    app, calls = camera_controls, []
+    video = tmp_path / "로컬 드론.mp4"
+    selected = [str(video)]
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(filedialog=SimpleNamespace(askopenfilename=lambda **kw: selected[0])),
+    )
+    app.change_source = lambda: calls.append("source")
+    app.start = lambda **kw: pytest.fail("Selecting a video must not open it")
+    app.choose_video()
+    assert app.source.get() == "video" and app.video_path == video
+    assert app.video_name.get() == video.name and calls == ["source"]
+    selected[0] = ""
+    app.choose_video()
+    assert app.video_path == video and calls == ["source"]
+    app.session = object()
+    selected[0] = "other.mp4"
+    app.choose_video()
+    assert app.video_path == video
+
+
+def test_dashboard_start_routes_selected_input_and_applies_video_mode(camera_controls, tmp_path):
+    app, calls = camera_controls, []
+    app.start = lambda **kwargs: calls.append(kwargs)
+    app.start_selected()
+    assert calls == [{}]
+    app.source.set("video")
+    app.start_selected()
+    assert calls == [{}]
+    app.video_path = tmp_path / "local.mp4"
+    app.start_selected()
+    assert calls[-1] == {"video_path": app.video_path}
+    assert app.mode.get() == "YOLO 자동 검출" and app.threshold.get() == "0.25"
+    app.threshold.set("0.4")
+    app.start_selected()
+    assert app.threshold.get() == "0.4"
+
+
+def test_advanced_settings_toggle_and_summary_follow_values(camera_controls):
+    app, visible = camera_controls, []
+    app.advanced_button = type(app.status)()
+    app.advanced_fields = SimpleNamespace(
+        winfo_manager=lambda: "grid" if visible else "",
+        grid=lambda **kw: visible.append(True),
+        grid_remove=lambda: visible.clear(),
+    )
+    app.toggle_advanced()
+    assert visible and "⌄" in app.advanced_button.options["text"]
+    app.toggle_advanced()
+    assert not visible and "›" in app.advanced_button.options["text"]
+    app.threshold.set("0.31")
+    app.device.set("cuda")
+    app.resolution.set("1280×720")
+    app.update_advanced_summary()
+    assert app.advanced_summary.get() == "임계값 0.31 · 장치 CUDA\n요청 해상도 1280×720"
+
+
+def test_sidebar_switches_panels_without_stopping_active_session(camera_controls):
+    app, shown = camera_controls, []
+    app.session = object()
+    for name in ("tracking_panel", "learning_panel"):
+        setattr(
+            app,
+            name,
+            SimpleNamespace(
+                grid_remove=lambda: None, grid=lambda name=name, **kw: shown.append(name)
+            ),
+        )
+    app.page.set("learning")
+    app.show_page()
+    assert shown[-1] == "learning_panel" and app.heading.get() == "학습 · 평가"
+    app.page.set("tracking")
+    app.show_page()
+    assert shown[-1] == "tracking_panel" and app.heading.get() == "드론 추적"
+    assert app.session is not None
+
+
+def test_settings_unlock_restores_combobox_readonly_state(camera_controls):
+    app = camera_controls
+    entry, combo, button = (type(app.status)() for _ in range(3))
+    entry.winfo_class = lambda: "TEntry"
+    combo.winfo_class = lambda: "TCombobox"
+    button.winfo_class = lambda: "Radiobutton"
+    app.settings_widgets, app.source_buttons = [entry, combo], [button]
+    app.lock_settings(True)
+    assert all(w.options["state"] == "disabled" for w in (entry, combo, button))
+    app.lock_settings(False)
+    assert combo.options["state"] == "readonly"
+    assert entry.options["state"] == button.options["state"] == "normal"
+
+
+def test_centered_preview_selection_uses_original_coordinates(monkeypatch, camera_controls):
+    app = camera_controls
+    frame = SimpleNamespace(shape=(100, 200, 3))
+    patches = []
+
+    class Frame:
+        shape = frame.shape
+
+        def __getitem__(self, slices):
+            patches.append(slices)
+            return SimpleNamespace(std=lambda: 20)
+
+    app.frame = Frame()
+    app.display_offset, app.display_scale = (80, 40), 2
+    app.last_display, app.drag_start, app.selection_time = 10.0, None, 0.0
+    app.session = SimpleNamespace(model_path=None, selections=queue.Queue(maxsize=1))
+    app.canvas.create_rectangle = lambda *a, **kw: 1
+    monkeypatch.setitem(
+        sys.modules, "cv2", SimpleNamespace(COLOR_BGR2GRAY=0, cvtColor=lambda a, b: a)
+    )
+    app.begin_selection(SimpleNamespace(x=70, y=60))
+    assert app.drag_start is None  # Letterbox margin is not part of the source image.
+    app.begin_selection(SimpleNamespace(x=100, y=60))
+    app.end_selection(SimpleNamespace(x=180, y=120))
+    selected = app.session.selections.get_nowait()
+    assert selected[1] == (10, 10, 50, 40)
+    assert patches == [(slice(10, 40), slice(10, 50))]
+    assert app.drag_start is None
+
+
+def test_observation_badge_clears_after_stop(camera_controls):
+    app = camera_controls
+    app.set_observation("대상 추적 중", "#46df98")
+    assert app.observed.get() == "●  관측 중"
+    assert app.preview_badge.options["foreground"] == "#46df98"
+    app.stop()
+    assert app.observed.get() == "—  미관측"
+    assert app.processing_time.get() == "—"
+    assert app.clear_button.options["state"] == app.stop_button.options["state"] == "disabled"
