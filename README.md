@@ -8,6 +8,8 @@
 
 `드론 카메라 실행.command`를 더블클릭하거나 `.venv/bin/python -m tools.camera_gui`로 실행합니다.
 Windows는 같은 프로그램을 사용하며 [Windows CUDA 설치·검증 안내](docs/windows-cuda.md)를 따릅니다.
+[Seraphim 기반 공개 쿼드콥터 모델](models/seraphim-yolov8n.md)을 설치하면
+GUI에서 YOLO 자동 검출을 기본 선택하며, 이후 같은 가중치에서 추가 학습할 수 있습니다.
 수동 드래그 추적과 로컬 드론 YOLO 모델 검출을 지원합니다. [실행·한계 안내](docs/camera-gui.md)를 확인하세요.
 수신·화면 갱신·추적 처리 FPS, 큐 교체·오래된 입력, p50/p95 지연을 따로 표시합니다.
 정지 후 수치 기록을 저장하고 같은 세션의 정답 박스로 평가할 수 있습니다. [측정·평가 안내](docs/tracking-metrics.md)를 확인하세요.

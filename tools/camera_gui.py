@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from tools.frame_collection import FrameCollector
+from tools.pretrained_drone import installed_model
 from tools.tracking_metrics import (
     SessionMetrics,
     evaluate,
@@ -897,9 +898,10 @@ class CameraGUI:
         controls.pack(fill="x")
         self.camera = tk.StringVar()
         self.cameras = {}
-        self.mode = tk.StringVar(value="수동 지정")
-        self.model = tk.StringVar()
-        self.threshold = tk.StringVar(value="0.65")
+        default_model = installed_model()
+        self.mode = tk.StringVar(value="YOLO 자동 검출" if default_model else "수동 지정")
+        self.model = tk.StringVar(value=str(default_model) if default_model else "")
+        self.threshold = tk.StringVar(value="0.25" if default_model else "0.65")
         self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
         self.resolution = tk.StringVar(value="1920×1080")
         self.capture_info = tk.StringVar(value="실제 입력: 대기 · 작은 대상 원본 크롭")
@@ -917,13 +919,15 @@ class CameraGUI:
         )
         self.refresh_button.grid(row=0, column=5, padx=4)
         ttk.Label(controls, text="추적 방식").grid(row=1, column=0)
-        ttk.Combobox(
+        mode_select = ttk.Combobox(
             controls,
             values=("수동 지정", "YOLO 자동 검출"),
             state="readonly",
             textvariable=self.mode,
             width=16,
-        ).grid(row=1, column=1, padx=8)
+        )
+        mode_select.grid(row=1, column=1, padx=8)
+        mode_select.bind("<<ComboboxSelected>>", self.change_mode)
         ttk.Label(controls, text="품질 임계값\n수동 0.65 / 자동 0.25").grid(
             row=1, column=2, columnspan=2
         )
@@ -1043,6 +1047,9 @@ class CameraGUI:
         )
         if path:
             self.model.set(path)
+
+    def change_mode(self, _event=None):
+        self.threshold.set("0.25" if self.mode.get() == "YOLO 자동 검출" else "0.65")
 
     def start(self):
         from tkinter import messagebox
