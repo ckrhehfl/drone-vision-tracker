@@ -148,6 +148,13 @@ def camera_controls():
     return app
 
 
+@pytest.mark.parametrize("mode,expected", [("수동 지정", "0.65"), ("YOLO 자동 검출", "0.25")])
+def test_mode_change_applies_appropriate_quality_threshold(camera_controls, mode, expected):
+    camera_controls.mode.set(mode)
+    camera_controls.change_mode()
+    assert camera_controls.threshold.get() == expected
+
+
 def test_camera_menu_defaults_to_mac_and_preserves_usb_identity(monkeypatch, camera_controls):
     import tools.camera_gui as gui
 

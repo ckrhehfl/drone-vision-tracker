@@ -5,6 +5,10 @@
 GUI에서 수집한 원본 사진·측정 기록의 검수와 YOLO 추가 학습·validation 비교는
 [재학습 파이프라인](retraining.md)을 따른다.
 
+바로 사용할 공개 모델은 [Seraphim 기반 쿼드콥터 모델 안내](../models/seraphim-yolov8n.md)를 따른다.
+이 모델을 설치하면 아래의 전체 데이터 1차 학습을 실행하지 않고도 GUI에서 검출하고,
+나중에 해당 가중치로 촬영 데이터 추가 학습을 시작할 수 있다.
+
 ## 1차 Seraphim → 실제 드론 사진 추가 학습
 
 사용자가 선택한 [Seraphim 공개 데이터](https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset)는

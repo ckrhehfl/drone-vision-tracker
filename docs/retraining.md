@@ -124,13 +124,13 @@ Seraphim 1차 `best.pt`에서 CUDA/MPS 추가 학습하고 같은 validation으�
 
 ## 4. 기존 YOLO 가중치에서 CUDA/MPS 추가 학습
 
-첫 실제 드론 사진 추가 학습에는 [Seraphim 1차 학습](training.md)의
-`runs/train/seraphim-v1/weights/best.pt`를 `models/local/baseline.pt`에 복사해 사용한다.
-복사본의 SHA-256이 원본과 같은지 확인하고 검수 상태와 데이터부터 검사한다.
+아래 예제는 [공개 쿼드콥터 모델](../models/seraphim-yolov8n.md)의 설치 가중치를 사용한다.
+직접 [Seraphim 1차 학습](training.md)을 했다면 `--model`과 비교의 `--baseline`을
+그 실행의 `weights/best.pt`로 지정한다. 원본을 보존하고 검수 상태와 데이터부터 검사한다.
 
 ```bash
 .venv/bin/python -m tools.train --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --check-only
-.venv/bin/python -m tools.train --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --model models/local/baseline.pt --device mps --epochs 100 --imgsz 640 --batch 4 --output runs/train/drone-retrain-v1-mps
+.venv/bin/python -m tools.train --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --model models/local/seraphim-yolov8n/best.pt --device mps --epochs 100 --imgsz 640 --batch 4 --output runs/train/drone-retrain-v1-mps
 ```
 
 기존 가중치로 새 학습을 시작한다. 결과는 별도 run의 `weights/best.pt`와 `training_record.json`에 남는다.
@@ -142,7 +142,7 @@ Windows CUDA 설치·PowerShell 명령은 [Windows 안내](windows-cuda.md)를 �
 ## 5. 같은 validation에서 이전/새 모델 비교
 
 ```bash
-.venv/bin/python -m tools.retrain compare --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --baseline models/local/baseline.pt --candidate runs/train/drone-retrain-v1-mps/weights/best.pt --output runs/compare/drone-retrain-v1 --imgsz 640 --batch 4
+.venv/bin/python -m tools.retrain compare --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --baseline models/local/seraphim-yolov8n/best.pt --candidate runs/train/drone-retrain-v1-mps/weights/best.pt --output runs/compare/drone-retrain-v1 --imgsz 640 --batch 4
 ```
 
 비교 장치 기본값은 `auto`이며 CUDA → MPS → CPU 순으로 선택한다.
