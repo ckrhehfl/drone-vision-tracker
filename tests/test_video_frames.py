@@ -133,6 +133,18 @@ def test_invalid_sampling_does_not_create_output(video_input, interval):
     assert not output.exists()
 
 
+@pytest.mark.parametrize("count", [0, -1, float("nan"), float("inf"), 1.5, 4])
+def test_unverifiable_frame_count_cannot_produce_completed_collection(video_input, count):
+    source, output, state, _ = video_input
+    state.count = count
+    with pytest.raises(ValueError, match="프레임 수"):
+        video_frames.extract_video(source, output)
+    report = json.loads((output / "samples.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed" and report["error"] and state.released
+    if count != 4:
+        assert state.index == 0 and report["samples"] == []
+
+
 def test_video_cli_reports_success_and_missing_input(video_input):
     source, output, _, _ = video_input
     assert video_frames.main(["--video", str(source), "--output", str(output)]) == 0

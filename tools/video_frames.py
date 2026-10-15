@@ -44,6 +44,8 @@ def extract_video(video, output, interval=SAMPLE_INTERVAL_S, cancel=None):
         if not capture.isOpened():
             raise ValueError("동영상을 열 수 없습니다. 파일·코덱을 확인하세요.")
         expected = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+        if not math.isfinite(expected) or expected < 1 or expected != int(expected):
+            raise ValueError("전체 프레임 수를 확인할 수 없어 영상의 완전성을 검증하지 못했습니다.")
         previous, next_sample = None, 0.0
         while True:
             if cancel is not None and cancel.is_set():
@@ -88,8 +90,8 @@ def extract_video(video, output, interval=SAMPLE_INTERVAL_S, cancel=None):
             next_sample = timestamp + interval
         if not report["samples"]:
             raise ValueError("디코딩한 프레임이 없습니다.")
-        if math.isfinite(expected) and expected > 0 and report["frames_decoded"] < round(expected):
-            raise ValueError("영상이 끝나기 전에 디코딩이 중단됐습니다. 부분 결과는 거부합니다.")
+        if report["frames_decoded"] != int(expected):
+            raise ValueError("디코딩한 프레임 수가 영상 정보와 다릅니다. 부분 결과는 거부합니다.")
         if sha256(video) != digest:
             raise ValueError("추출 중 원본 동영상이 변경됐습니다.")
         report["status"] = "completed"
