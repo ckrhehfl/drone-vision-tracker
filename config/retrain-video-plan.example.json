@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "needs_review",
+  "split_rule": "capture_group_before_case_selection",
+  "sources": [
+    {
+      "source_type": "video",
+      "split": "train",
+      "capture_id": "independent-video-capture-train",
+      "samples": "video-train/samples.json",
+      "annotations": "video-train/annotations.json"
+    },
+    {
+      "source_type": "video",
+      "split": "val",
+      "capture_id": "independent-video-capture-val",
+      "samples": "video-val/samples.json",
+      "annotations": "video-val/annotations.json"
+    },
+    {
+      "source_type": "video",
+      "split": "test",
+      "capture_id": "independent-video-capture-test",
+      "samples": "video-test/samples.json",
+      "annotations": "video-test/annotations.json"
+    }
+  ]
+}

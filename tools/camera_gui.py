@@ -883,6 +883,9 @@ class CameraGUI:
 
         self.root, self.session, self.frame = root, None, None
         self.closing = False
+        self.video_thread = None
+        self.video_cancel = threading.Event()
+        self.video_results = queue.Queue(maxsize=1)
         self.drag_start, self.selection, self.photo = None, None, None
         self.result, self.selection_time = None, 0.0
         self.metrics = None
@@ -971,11 +974,15 @@ class CameraGUI:
             measurements, text="정답 파일로 평가", command=self.evaluate_metrics, state="disabled"
         )
         self.evaluate_button.grid(row=0, column=2)
+        self.video_button = ttk.Button(
+            measurements, text="동영상 가져오기", command=self.import_video
+        )
+        self.video_button.grid(row=0, column=3, padx=8)
         self.performance = tk.StringVar(
             value="성능: 대기 · 속도와 품질 점수는 인식 정확도가 아닙니다."
         )
         ttk.Label(measurements, textvariable=self.performance, wraplength=750, justify="left").grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=4
+            row=1, column=0, columnspan=4, sticky="w", pady=4
         )
         self.canvas = tk.Canvas(root, background="#111827", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=12)
@@ -994,7 +1001,7 @@ class CameraGUI:
         root.after(30, self.poll)
 
     def refresh_cameras(self):
-        if self.session is not None:
+        if self.session is not None or self.video_thread is not None:
             return
         selected = self.cameras.get(self.camera.get(), {}).get("id")
         empty_label = "연결된 카메라 없음"
@@ -1040,7 +1047,7 @@ class CameraGUI:
     def start(self):
         from tkinter import messagebox
 
-        if self.session is not None or self.closing:
+        if self.session is not None or self.closing or self.video_thread is not None:
             return
         try:
             camera = self.cameras.get(self.camera.get())
@@ -1069,6 +1076,7 @@ class CameraGUI:
             self.save_metrics_button.configure(state="disabled")
             self.evaluate_button.configure(state="disabled")
             self.collect_button.configure(state="normal")
+            self.video_button.configure(state="disabled")
             self.start_button.configure(state="disabled")
             self.camera_select.configure(state="disabled")
             self.refresh_button.configure(state="disabled")
@@ -1099,6 +1107,66 @@ class CameraGUI:
                 self.status.set(f"학습 사진 수집 · {session.collector.root}")
             except (OSError, ValueError) as exc:
                 messagebox.showerror("학습 수집 실패", str(exc))
+
+    def import_video(self):
+        from tkinter import filedialog
+
+        if self.session is not None or self.closing or self.video_thread is not None:
+            return
+        video = filedialog.askopenfilename(
+            title="추가 학습용 로컬 동영상 선택",
+            filetypes=[("동영상", "*.mp4 *.mov *.avi *.mkv *.webm"), ("모든 파일", "*.*")],
+        )
+        if not video:
+            return
+        parent = filedialog.askdirectory(title="추출한 원본 프레임을 저장할 폴더 선택")
+        if not parent:
+            return
+        from uuid import uuid4
+
+        output = Path(parent) / f"video-{uuid4().hex[:12]}"
+        self.video_cancel.clear()
+        self.video_button.configure(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.status.set("동영상 프레임 추출 중 · 카메라 없이 로컬 파일을 읽습니다.")
+        self.video_thread = threading.Thread(
+            target=self.extract_video, args=(video, output), daemon=True
+        )
+        self.video_thread.start()
+
+    def extract_video(self, video, output):
+        from tools.video_frames import extract_video
+
+        try:
+            report = extract_video(video, output, cancel=self.video_cancel)
+            self.video_results.put((output, len(report["samples"]), None))
+        except Exception as exc:
+            self.video_results.put((output, 0, str(exc)))
+
+    def finish_video_import(self):
+        from tkinter import messagebox
+
+        try:
+            output, count, error = self.video_results.get_nowait()
+        except queue.Empty:
+            return
+        self.video_thread = None
+        if self.closing:
+            return
+        self.video_button.configure(state="normal")
+        self.refresh_cameras()
+        if error:
+            self.status.set(f"동영상 가져오기 실패 · {output}")
+            messagebox.showerror("동영상 가져오기 실패", error)
+        else:
+            self.status.set(f"동영상 {count}장 추출 완료 · {output}")
+            messagebox.showinfo(
+                "라벨 검수 후 추가 학습",
+                f"{count}장 저장: {output}\n\n"
+                "annotations.example.json을 annotations.json으로 복사해 드론 박스와 "
+                "배경을 검수하세요. 촬영 그룹 분할 후 기존 재학습 명령으로 준비·학습합니다.\n"
+                "자세한 순서: docs/retraining.md",
+            )
 
     def save_metrics(self):
         from tkinter import filedialog, messagebox
@@ -1187,6 +1255,7 @@ class CameraGUI:
         import cv2
         from PIL import Image, ImageTk
 
+        self.finish_video_import()
         session = self.session
         if session is not None:
             try:
@@ -1203,6 +1272,7 @@ class CameraGUI:
                     self.save_metrics_button.configure(state="normal")
                     self.evaluate_button.configure(state="normal")
                     self.collect_button.configure(state="disabled")
+                    self.video_button.configure(state="normal")
                     self.start_button.configure(state="normal")
                     self.camera_select.configure(state="readonly")
                     self.refresh_button.configure(state="normal")
@@ -1295,8 +1365,14 @@ class CameraGUI:
 
     def close(self):
         self.closing = True
+        self.video_cancel.set()
         self.stop()
-        if self.session and self.session.alive():
+        if (
+            self.session
+            and self.session.alive()
+            or self.video_thread
+            and self.video_thread.is_alive()
+        ):
             self.root.after(50, self.close)
         else:
             if self.session is not None:
