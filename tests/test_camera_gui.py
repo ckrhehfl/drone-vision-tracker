@@ -118,6 +118,9 @@ def camera_controls():
 
     app = CameraGUI.__new__(CameraGUI)
     app.closing = False
+    app.video_thread = None
+    app.video_cancel = threading.Event()
+    app.video_results = queue.Queue(maxsize=1)
     app.metrics = None
     app.session, app.cameras, app.frame, app.result = None, {}, None, None
     for name in (
@@ -130,6 +133,7 @@ def camera_controls():
         "save_metrics_button",
         "evaluate_button",
         "collect_button",
+        "video_button",
     ):
         setattr(app, name, Control())
     for name, value in (
@@ -1504,6 +1508,86 @@ def test_opt_in_collection_dialog_and_finish_on_exit(monkeypatch, camera_control
     session.finish()
     assert path.read_bytes() == original
     app.collect_frames()  # A stopped session cannot reopen the dialog.
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_import_video_without_camera_and_notify_after_worker(
+    monkeypatch, camera_controls, tmp_path, failure
+):
+    import tools.camera_gui as gui
+    import tools.video_frames as video_frames
+
+    app, errors, notices, calls = camera_controls, [], [], []
+    monkeypatch.setattr(gui, "list_cameras", lambda: [])
+    monkeypatch.setattr(
+        gui, "CameraSession", lambda *a: pytest.fail("Video import opens no camera")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(
+            filedialog=SimpleNamespace(
+                askopenfilename=lambda **kwargs: "외부 영상.mp4",
+                askdirectory=lambda **kwargs: str(tmp_path),
+            ),
+            messagebox=SimpleNamespace(
+                showerror=lambda *a: errors.append(a), showinfo=lambda *a: notices.append(a)
+            ),
+        ),
+    )
+
+    def extract(video, output, *, cancel):
+        calls.append((video, output, cancel))
+        if failure:
+            raise ValueError("unsupported codec")
+        return {"samples": [1, 2, 3]}
+
+    monkeypatch.setattr(video_frames, "extract_video", extract)
+    app.import_video()
+    worker = app.video_thread
+    worker.join(2)
+    assert not worker.is_alive()
+    app.start()  # Import stays exclusive until its completion is consumed on the UI thread.
+    assert app.session is None and app.video_button.options["state"] == "disabled"
+    app.finish_video_import()
+    assert app.video_thread is None and app.video_button.options["state"] == "normal"
+    assert calls[0][0] == "외부 영상.mp4" and calls[0][1].parent == tmp_path
+    assert calls[0][2] is app.video_cancel
+    assert bool(errors) == failure and bool(notices) != failure
+    if not failure:
+        assert "annotations.json" in notices[0][1] and "3장" in app.status.get()
+    app.finish_video_import()  # Empty completion queue is harmless.
+
+
+@pytest.mark.parametrize("cancel_at", ["video", "directory"])
+def test_cancel_video_file_dialog_does_not_start_worker(monkeypatch, camera_controls, cancel_at):
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(
+            filedialog=SimpleNamespace(
+                askopenfilename=lambda **kwargs: "" if cancel_at == "video" else "video.mp4",
+                askdirectory=lambda **kwargs: "",
+            )
+        ),
+    )
+    camera_controls.import_video()
+    assert camera_controls.video_thread is None
+
+
+def test_close_cancels_video_and_waits_for_worker(camera_controls):
+    app, callbacks, destroyed = camera_controls, [], []
+    worker = SimpleNamespace(is_alive=lambda: True)
+    app.video_thread = worker
+    app.root = SimpleNamespace(
+        after=lambda delay, callback: callbacks.append((delay, callback)),
+        destroy=lambda: destroyed.append(True),
+    )
+    app.close()
+    assert app.video_cancel.is_set() and callbacks == [(50, app.close)] and not destroyed
+    worker.is_alive = lambda: False
+    callbacks[0][1]()
+    assert destroyed == [True]
 
 
 @pytest.mark.parametrize("box", [(0, 0, 20, 20), (950, 530, 970, 550), (1890, 1050, 1920, 1080)])

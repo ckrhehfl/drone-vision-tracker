@@ -104,6 +104,11 @@ def check_dataset(
             if not isinstance(original, str) or not original.strip() or not is_sha256(capture_hash):
                 raise ValueError("Session needs original_video identity and original_video_sha256.")
             identities = ((capture_splits, capture_hash), (capture_names, original))
+            if "capture_id" in session:
+                capture_id = session["capture_id"]
+                if not isinstance(capture_id, str) or not capture_id.strip():
+                    raise ValueError("Video capture_id must be a reviewed nonempty group.")
+                identities += ((capture_names, capture_id),)
         elif source_type == "photos":
             capture_id = session.get("capture_id")
             if not isinstance(capture_id, str) or not capture_id.strip():

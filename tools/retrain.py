@@ -1,4 +1,4 @@
-"""Build reviewed learning data from measured camera stills and compare local YOLO weights."""
+"""Build reviewed learning data from camera stills or videos and compare local YOLO weights."""
 
 import argparse
 import json
@@ -31,25 +31,49 @@ def load_source(entry, parent):
         raise ValueError("각 촬영 그룹에 train/val/test 중 하나를 지정하세요.")
     if not isinstance(entry.get("capture_id"), str) or not entry["capture_id"].strip():
         raise ValueError("독립성을 검수한 촬영 그룹 capture_id가 필요합니다.")
-    paths = {
-        key: local_input(parent, entry.get(key)) for key in ("record", "samples", "annotations")
-    }
+    source_type = entry.get("source_type", "photos")
+    if source_type not in ("photos", "video"):
+        raise ValueError("source_type은 photos 또는 video여야 합니다.")
+    video = source_type == "video"
+    keys = ("samples", "annotations") if video else ("record", "samples", "annotations")
+    paths = {key: local_input(parent, entry.get(key)) for key in keys}
     provenance = {key + "_sha256": sha256(path) for key, path in paths.items()}
-    record, collection, annotations = (read_json(paths[key]) for key in paths)
-    rows = validate_record(record)
+    collection, annotations = (read_json(paths[key]) for key in ("samples", "annotations"))
+    if not isinstance(collection, dict):
+        raise ValueError("수집 메타데이터가 필요합니다.")
+    if video:
+        session_id = collection.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("영상 수집 session_id가 필요합니다.")
+        if (
+            collection.get("timestamp_source") != "opencv_pos_msec"
+            or type(collection.get("frames_decoded")) is not int
+            or collection["frames_decoded"] <= 0
+            or collection.get("error") is not None
+        ):
+            raise ValueError("정상 완료된 영상 디코딩·시각 기록이 필요합니다.")
+        paths["original_video"] = local_input(
+            paths["samples"].parent, collection.get("original_video")
+        )
+        provenance["original_video_sha256"] = sha256(paths["original_video"])
+        if provenance["original_video_sha256"] != collection.get("original_video_sha256"):
+            raise ValueError("원본 동영상 해시가 다릅니다. 다시 추출·검수하세요.")
+        rows = None
+    else:
+        record = read_json(paths["record"])
+        rows = validate_record(record)
+        session_id = record["session_id"]
     for value in (collection, annotations):
         if (
             not isinstance(value, dict)
             or type(value.get("schema_version")) is not int
             or value["schema_version"] != 1
-            or value.get("session_id") != record["session_id"]
+            or value.get("session_id") != session_id
         ):
             raise ValueError("측정·수집·라벨 파일의 버전/session_id가 일치해야 합니다.")
-    if collection.get("source_type") != "camera_stills" or collection.get("status") != "completed":
-        raise ValueError(
-            "정상 종료된 카메라 원본 사진 수집만 지원합니다. "
-            "영상에서 추출한 자료는 기존 video manifest를 사용하세요."
-        )
+    expected_source = "video_frames" if video else "camera_stills"
+    if collection.get("source_type") != expected_source or collection.get("status") != "completed":
+        raise ValueError("정상 종료된 카메라 사진 또는 동영상 추출 자료만 지원합니다.")
     if annotations.get("status") != "reviewed" or annotations.get("target_class") != "drone":
         raise ValueError(
             "드론 정답을 사람이 검수한 annotations"
@@ -69,18 +93,19 @@ def load_source(entry, parent):
             raise ValueError("라벨 frame_id가 잘못됐거나 중복됐습니다.")
         by_id[label["frame_id"]] = label["box"]
     prepared, seen = [], set()
+    previous_time, previous_frame = -1.0, 0
     root = paths["samples"].parent
     for sample in samples:
         if (
             not isinstance(sample, dict)
             or type(sample.get("frame_id")) is not int
-            or not 1 <= sample["frame_id"] <= len(rows)
+            or not 1 <= sample["frame_id"] <= (collection["frames_decoded"] if video else len(rows))
             or sample["frame_id"] in seen
         ):
             raise ValueError("수집 frame_id가 기록에 없거나 중복됐습니다.")
         frame_id = sample["frame_id"]
         seen.add(frame_id)
-        row = rows[frame_id - 1]
+        row = sample if video else rows[frame_id - 1]
         if (
             type(sample.get("width")) is not int
             or type(sample.get("height")) is not int
@@ -88,6 +113,17 @@ def load_source(entry, parent):
             or any(sample.get(key) != row[key] for key in ("width", "height", "timestamp_s"))
         ):
             raise ValueError("수집 사진의 원본 크기·시각이 측정 기록과 다릅니다.")
+        if video:
+            if (
+                sample["width"] <= 0
+                or sample["height"] <= 0
+                or not math.isfinite(sample["timestamp_s"])
+                or sample["timestamp_s"] < 0
+                or sample["timestamp_s"] <= previous_time
+                or frame_id <= previous_frame
+            ):
+                raise ValueError("영상 프레임 크기·순서·시각이 잘못됐습니다.")
+            previous_time, previous_frame = sample["timestamp_s"], frame_id
         relative = sample.get("image_path")
         if relative != f"frames/frame-{frame_id:06d}.png":
             raise ValueError("수집 사진 경로는 frames/frame-NNNNNN.png 형식이어야 합니다.")
@@ -114,7 +150,7 @@ def load_source(entry, parent):
             )
         target = validate_box(by_id[frame_id], row["width"], row["height"])
         case = None
-        if entry["split"] == "train":
+        if entry["split"] == "train" and not video:
             prediction = row["box"]
             case = (
                 "unprocessed"
@@ -134,7 +170,7 @@ def load_source(entry, parent):
         raise ValueError("라벨 frame_id는 저장된 사진 목록과 정확히 일치해야 합니다.")
     if provenance != {key + "_sha256": sha256(path) for key, path in paths.items()}:
         raise ValueError("준비 중 측정·수집·라벨 파일이 변경됐습니다. 다시 검수하세요.")
-    return record["session_id"], prepared, provenance
+    return session_id, prepared, provenance, paths
 
 
 def prepare(plan_path, output, version):
@@ -161,21 +197,27 @@ def prepare(plan_path, output, version):
         raise ValueError("학습 데이터 계획에 sources가 필요합니다.")
     groups, sessions_seen, loaded = {}, set(), []
     for entry in sources:
-        session_id, photos, provenance = load_source(entry, plan_path.parent)
+        session_id, photos, provenance, paths = load_source(entry, plan_path.parent)
         split, capture_id = entry["split"], entry["capture_id"]
-        if session_id in sessions_seen or capture_id in groups and groups[capture_id] != split:
+        identities = [("capture", capture_id)]
+        if "original_video_sha256" in provenance:
+            identities.append(("video", provenance["original_video_sha256"]))
+        if session_id in sessions_seen or any(
+            identity in groups and groups[identity] != split for identity in identities
+        ):
             raise ValueError(
                 "같은 기록을 재사용하거나 같은 촬영 그룹을 여러 split으로 나눌 수 없습니다."
             )
         sessions_seen.add(session_id)
-        groups[capture_id] = split
-        loaded.append((entry, session_id, photos, provenance))
+        groups.update(dict.fromkeys(identities, split))
+        loaded.append((entry, session_id, photos, provenance, paths))
     if set(groups.values()) != set(SPLITS):
         raise ValueError("독립 train/val/test 촬영 그룹을 모두 준비하세요.")
     output.mkdir(parents=True, exist_ok=False)
     sessions, cases, origins = [], [], []
-    for number, (entry, session_id, photos, provenance) in enumerate(loaded, 1):
+    for number, (entry, session_id, photos, provenance, paths) in enumerate(loaded, 1):
         split, group = entry["split"], f"source-{number:03d}"
+        video = "original_video" in paths
         images = []
         for photo in photos:
             sample, target = photo["sample"], photo["target"]
@@ -206,10 +248,10 @@ def prepare(plan_path, output, version):
                     "path": destination.relative_to(output).as_posix(),
                     "sha256": sample["sha256"],
                     "source_path": f"{group}/{sample['image_path']}",
-                    "capture_elapsed_s": sample["timestamp_s"],
+                    "timestamp_s" if video else "capture_elapsed_s": sample["timestamp_s"],
                 }
             )
-            if split == "train":
+            if split == "train" and photo["case"] is not None:
                 cases.append(
                     {
                         "path": images[-1]["path"],
@@ -221,8 +263,16 @@ def prepare(plan_path, output, version):
         sessions.append(
             {
                 "session_id": group,
-                "source_type": "photos",
+                "source_type": "video" if video else "photos",
                 "capture_id": entry["capture_id"],
+                **(
+                    {
+                        "original_video": str(paths["original_video"]),
+                        "original_video_sha256": provenance["original_video_sha256"],
+                    }
+                    if video
+                    else {}
+                ),
                 "split": split,
                 "images": images,
             }
@@ -240,11 +290,8 @@ def prepare(plan_path, output, version):
     )
     if sha256(plan_path) != plan_digest:
         raise ValueError("준비 중 촬영 분할 계획이 변경됐습니다. 새 버전으로 다시 준비하세요.")
-    for entry, _, _, provenance in loaded:
-        if provenance != {
-            key + "_sha256": sha256(local_input(plan_path.parent, entry[key]))
-            for key in ("record", "samples", "annotations")
-        }:
+    for _, _, _, provenance, paths in loaded:
+        if provenance != {key + "_sha256": sha256(path) for key, path in paths.items()}:
             raise ValueError("준비 중 측정·수집·라벨 파일이 변경됐습니다. 다시 검수하세요.")
     return write_metadata(
         output,

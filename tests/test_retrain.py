@@ -153,6 +153,154 @@ def test_preparation_uses_human_boxes_and_preserves_holdout(learning_plan, monke
         retrain.prepare(plan, output, "v3")
 
 
+@pytest.fixture
+def video_plan(learning_plan):
+    plan, output = learning_plan
+    data = retrain.read_json(plan)
+    for entry in data["sources"]:
+        root = plan.parent / entry["split"]
+        video = root / "원본 동영상.mp4"
+        video.write_bytes(f"independent-video-{entry['split']}".encode())
+        collection_path = root / "samples.json"
+        collection = retrain.read_json(collection_path)
+        collection.update(
+            source_type="video_frames",
+            original_video=str(video),
+            original_video_sha256=sha256(video),
+            frames_decoded=2,
+            timestamp_source="opencv_pos_msec",
+            error=None,
+        )
+        write_json(collection_path, collection)
+        (plan.parent / entry.pop("record")).unlink()
+        entry["source_type"] = "video"
+    write_json(plan, data)
+    return plan, output
+
+
+def test_reviewed_videos_use_original_identity_and_pts_without_fake_measurement(video_plan):
+    plan, output = video_plan
+    result = retrain.prepare(plan, output, "video-v1")
+    assert result["source_types"] == ["video"]
+    manifest = retrain.read_json(output / "manifest.json")
+    assert manifest["status"] == "needs_review"
+    assert json.loads((output / "training_cases.json").read_text(encoding="utf-8")) == []
+    for session, origin in zip(manifest["sessions"], manifest["learning_sources"], strict=True):
+        assert session["original_video_sha256"] == sha256(Path(session["original_video"]))
+        assert origin["original_video_sha256"] == session["original_video_sha256"]
+        assert "record_sha256" not in origin
+        assert [row["timestamp_s"] for row in session["images"]] == [1, 2]
+        assert all("capture_elapsed_s" not in row for row in session["images"])
+    assert (output / "labels/train/source-001/000002.txt").read_text(encoding="utf-8") == ""
+    manifest["status"] = "ready"
+    write_json(output / "manifest.json", manifest)
+    assert (
+        train_main(
+            [
+                "--data",
+                str(output / "dataset.yaml"),
+                "--manifest",
+                str(output / "manifest.json"),
+                "--check-only",
+            ]
+        )
+        == 0
+    )
+    manifest["sessions"][1]["capture_id"] = manifest["sessions"][0]["capture_id"]
+    write_json(output / "manifest.json", manifest)
+    with pytest.raises(ValueError, match="same original capture"):
+        check_dataset(output / "dataset.yaml", output / "manifest.json")
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "source_changed",
+        "failed",
+        "negative_pts",
+        "unordered_pts",
+        "wrong_source",
+        "same_video",
+        "short_decode",
+        "wrong_timestamp_source",
+        "unreviewed",
+    ],
+)
+def test_video_preparation_rejects_invalid_sources_before_creating_dataset(video_plan, problem):
+    plan, output = video_plan
+    path = plan.parent / "train/samples.json"
+    collection = retrain.read_json(path)
+    if problem == "source_changed":
+        Path(collection["original_video"]).write_bytes(b"changed")
+    elif problem == "failed":
+        collection["status"] = "failed"
+    elif problem == "negative_pts":
+        collection["samples"][0]["timestamp_s"] = -0.5
+    elif problem == "unordered_pts":
+        collection["samples"][1]["timestamp_s"] = 0
+    elif problem == "wrong_source":
+        collection["source_type"] = "camera_stills"
+    elif problem == "same_video":
+        other_path = plan.parent / "val/samples.json"
+        other = retrain.read_json(other_path)
+        # A renamed byte-identical video still belongs to one split only.
+        Path(other["original_video"]).write_bytes(Path(collection["original_video"]).read_bytes())
+        other["original_video_sha256"] = collection["original_video_sha256"]
+        write_json(other_path, other)
+    elif problem == "short_decode":
+        collection["frames_decoded"] = 1
+    elif problem == "wrong_timestamp_source":
+        collection["timestamp_source"] = "made_up_fps_clock"
+    elif problem == "unreviewed":
+        annotations = plan.parent / "train/annotations.json"
+        labels = retrain.read_json(annotations)
+        labels["status"] = "needs_review"
+        write_json(annotations, labels)
+    write_json(path, collection)
+    with pytest.raises(ValueError):
+        retrain.prepare(plan, output, "bad-video")
+    assert not output.exists()
+
+
+def test_video_train_can_use_existing_camera_holdout(learning_plan):
+    plan, output = learning_plan
+    data = retrain.read_json(plan)
+    entry = data["sources"][0]
+    video = plan.parent / "train/clip.mp4"
+    video.write_bytes(b"video-train")
+    collection_path = plan.parent / entry["samples"]
+    collection = retrain.read_json(collection_path)
+    collection.update(
+        source_type="video_frames",
+        original_video=str(video),
+        original_video_sha256=sha256(video),
+        frames_decoded=2,
+        timestamp_source="opencv_pos_msec",
+        error=None,
+    )
+    write_json(collection_path, collection)
+    entry.pop("record")
+    entry["source_type"] = "video"
+    write_json(plan, data)
+    assert retrain.prepare(plan, output, "mixed-v1")["source_types"] == ["photos", "video"]
+
+
+def test_video_source_change_during_copy_cannot_produce_ready_dataset(video_plan, monkeypatch):
+    plan, output = video_plan
+    video = Path(retrain.read_json(plan.parent / "train/samples.json")["original_video"])
+    original_copy = retrain.shutil.copyfile
+
+    def changing_copy(source, destination):
+        result = original_copy(source, destination)
+        video.write_bytes(b"changed-during-copy")
+        return result
+
+    monkeypatch.setattr(retrain.shutil, "copyfile", changing_copy)
+    with pytest.raises(ValueError, match="変更|변경"):
+        retrain.prepare(plan, output, "changed-video")
+    assert not (output / "manifest.json").exists()
+
+
 @pytest.mark.parametrize(
     "file,mutate",
     [
