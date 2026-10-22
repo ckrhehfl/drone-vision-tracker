@@ -123,6 +123,7 @@ def camera_controls():
     app.video_cancel = threading.Event()
     app.video_results = queue.Queue(maxsize=1)
     app.metrics = None
+    app.label_editor = None
     app.session, app.cameras, app.frame, app.result = None, {}, None, None
     app.settings_widgets, app.source_buttons = [], []
     app.mode_buttons = []
@@ -2256,3 +2257,39 @@ def test_observation_badge_clears_after_stop(camera_controls):
     assert app.observed.get() == "—  미관측"
     assert app.processing_time.get() == "—"
     assert app.clear_button.options["state"] == app.stop_button.options["state"] == "disabled"
+
+
+def test_label_editor_opens_once_and_reuses_existing_window(monkeypatch, camera_controls):
+    import tools.label_editor as labels
+
+    app, created, lifted = camera_controls, [], []
+    app.root = object()
+    window = SimpleNamespace(winfo_exists=lambda: True, lift=lambda: lifted.append(True))
+
+    def create(parent):
+        created.append(parent)
+        return SimpleNamespace(window=window)
+
+    monkeypatch.setattr(labels, "LabelEditor", create)
+    app.edit_labels()
+    app.edit_labels()
+    assert created == [app.root] and lifted == [True]
+    window.winfo_exists = lambda: False
+    app.edit_labels()
+    assert created == [app.root, app.root]
+    app.closing = True
+    app.edit_labels()
+    assert len(created) == 2
+
+
+def test_main_close_preserves_unsaved_labels_when_editor_cancels(camera_controls):
+    app, destroyed = camera_controls, []
+    app.root = SimpleNamespace(destroy=lambda: destroyed.append(True))
+    app.label_editor = SimpleNamespace(
+        window=SimpleNamespace(winfo_exists=lambda: True), request_close=lambda: False
+    )
+    app.close()
+    assert not app.closing and not app.video_cancel.is_set() and not destroyed
+    app.label_editor.request_close = lambda: True
+    app.close()
+    assert app.closing and app.video_cancel.is_set() and destroyed == [True]

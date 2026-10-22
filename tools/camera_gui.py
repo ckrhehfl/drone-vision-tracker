@@ -991,6 +991,7 @@ class CameraGUI:
         self.result, self.selection_time = None, 0.0
         self.video_progress = (0.0, 0)
         self.metrics = None
+        self.label_editor = None
         self.display_scale = 1.0
         self.display_offset = (0, 0)
         self.video_path = None
@@ -1372,34 +1373,37 @@ class CameraGUI:
             self.learning_panel, text="학습용 영상 가져오기", command=self.import_video
         )
         self.video_button.grid(row=3, sticky="ew", pady=4)
-        ttk.Separator(self.learning_panel).grid(row=4, sticky="ew", pady=22)
+        ttk.Button(self.learning_panel, text="수동 라벨 편집기", command=self.edit_labels).grid(
+            row=4, sticky="ew", pady=4
+        )
+        ttk.Separator(self.learning_panel).grid(row=5, sticky="ew", pady=22)
         ttk.Label(self.learning_panel, text="측정 · 평가", style="Section.TLabel").grid(
-            row=5, sticky="w"
+            row=6, sticky="w"
         )
         ttk.Label(
             self.learning_panel,
             text="추적 정지 후 측정 기록을 저장하고\n같은 세션의 정답 파일로 평가하세요.",
             style="Muted.TLabel",
             wraplength=284,
-        ).grid(row=6, sticky="w", pady=(10, 16))
+        ).grid(row=7, sticky="w", pady=(10, 16))
         self.save_metrics_button = ttk.Button(
             self.learning_panel, text="측정 기록 저장", command=self.save_metrics, state="disabled"
         )
-        self.save_metrics_button.grid(row=7, sticky="ew", pady=4)
+        self.save_metrics_button.grid(row=8, sticky="ew", pady=4)
         self.evaluate_button = ttk.Button(
             self.learning_panel,
             text="정답 파일로 평가",
             command=self.evaluate_metrics,
             state="disabled",
         )
-        self.evaluate_button.grid(row=8, sticky="ew", pady=4)
+        self.evaluate_button.grid(row=9, sticky="ew", pady=4)
         ttk.Label(
             self.learning_panel,
             text="수집·가져오기에서 선택한 폴더에만\n원본 사진을 저장합니다.\n"
             "모델 학습은 기존 재학습 도구를 사용합니다.",
             style="Muted.TLabel",
             wraplength=284,
-        ).grid(row=9, sticky="w", pady=(20, 4))
+        ).grid(row=10, sticky="w", pady=(20, 4))
 
         preview = tk.Frame(content, background="#f7f9fc")
         preview.grid(row=1, column=1, sticky="nsew")
@@ -2110,7 +2114,23 @@ class CameraGUI:
                 )
         self.root.after(30, self.poll)
 
+    def edit_labels(self):
+        from tools.label_editor import LabelEditor
+
+        if self.closing:
+            return
+        if self.label_editor is not None and self.label_editor.window.winfo_exists():
+            self.label_editor.window.lift()
+        else:
+            self.label_editor = LabelEditor(self.root)
+
     def close(self):
+        if (
+            self.label_editor is not None
+            and self.label_editor.window.winfo_exists()
+            and not self.label_editor.request_close()
+        ):
+            return
         self.closing = True
         self.video_cancel.set()
         self.stop()

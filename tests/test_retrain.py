@@ -522,3 +522,22 @@ def test_cli_compare_records_setup_failure_and_preserves_output(
     assert retrain.main(args) == 1
     assert report_path.read_bytes() == before
     assert "이미" in capsys.readouterr().out
+
+
+def test_editor_reviewed_labels_feed_existing_retraining_pipeline(learning_plan):
+    from tools.label_editor import LabelDocument
+
+    plan, output = learning_plan
+    for split in ("train", "val", "test"):
+        root = plan.parent / split
+        path = root / "annotations.json"
+        labels = retrain.read_json(path)
+        path.unlink()
+        document = LabelDocument(root)
+        assert document.remaining == 2
+        for index, row in enumerate(labels["frames"]):
+            document.set_box(index, row["box"])
+        document.save(reviewed=True)
+    summary = retrain.prepare(plan, output, "editor-labels")
+    assert summary["splits"] == {s: {"images": 2, "objects": 1} for s in ("train", "val", "test")}
+    assert retrain.read_json(output / "manifest.json")["status"] == "needs_review"
