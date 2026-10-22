@@ -41,9 +41,10 @@ ObjC.import('AVFoundation');
 var capture = $.NSClassFromString('AVCaptureDevice');
 var devices = capture.devicesWithMediaType('vide')
     .arrayByAddingObjectsFromArray(capture.devicesWithMediaType('muxx'));
-devices = devices.sortedArrayUsingDescriptors([
+// Keep descriptors in a native NSArray; JXA converts a JS array into dictionaries.
+devices = devices.sortedArrayUsingDescriptors($.NSArray.arrayWithObject(
     $.NSSortDescriptor.sortDescriptorWithKeyAscending('uniqueID', true)
-]);
+));
 var output = [];
 for (var i = 0; i < devices.count; i++) {
     var device = devices.objectAtIndex(i);
