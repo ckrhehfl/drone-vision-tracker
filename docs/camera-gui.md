@@ -107,7 +107,7 @@ USB 연결 후 내장·외장 카메라 목록이 모두 사라졌다면 먼저 
 목록 표시와 실제 영상 수신은 별도 검증이며, 권한·코덱·입력 해상도 문제는 추적 시작 후 확인한다.
 
 카메라를 켜지 않고 목록 조회만 검사하려면 저장소 루트에서 다음을 실행한다.
-USB가 연결되어 있으면 출력에 내장 카메라와 USB 카메라 이름이 모두 있어야 한다.
+출력에는 macOS가 인식한 연결된 카메라 이름이 모두 있어야 한다.
 
 ```bash
 .venv/bin/python -c 'from tools.camera_gui import list_cameras; print([d["name"] for d in list_cameras()])'
