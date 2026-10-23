@@ -124,6 +124,7 @@ def camera_controls():
     app.video_results = queue.Queue(maxsize=1)
     app.metrics = None
     app.label_editor = None
+    app.training_window = None
     app.session, app.cameras, app.frame, app.result = None, {}, None, None
     app.settings_widgets, app.source_buttons = [], []
     app.mode_buttons = []
@@ -2293,3 +2294,62 @@ def test_main_close_preserves_unsaved_labels_when_editor_cancels(camera_controls
     app.label_editor.request_close = lambda: True
     app.close()
     assert app.closing and app.video_cancel.is_set() and destroyed == [True]
+
+
+def test_training_window_reuses_one_window_and_tracks_active_camera(monkeypatch, camera_controls):
+    import tools.training_gui as training
+
+    app, created = camera_controls, []
+    app.root = object()
+    view = SimpleNamespace(winfo_exists=lambda: True, lift=lambda: created.append("lift"))
+
+    def create(parent, can_run):
+        created.append(can_run)
+        return SimpleNamespace(window=view, process=None)
+
+    monkeypatch.setattr(training, "TrainingWindow", create)
+    app.train_labels()
+    assert created[0]() is True
+    app.session = object()
+    assert created[0]() is False
+    app.train_labels()
+    assert created[-1] == "lift"
+    view.winfo_exists = lambda: False
+    app.train_labels()
+    assert len(created) == 3
+
+
+def test_main_close_waits_for_training_and_honors_cancel(camera_controls):
+    app, calls = camera_controls, []
+    app.root = SimpleNamespace(
+        after=lambda *a: calls.append(a), destroy=lambda: calls.append("destroy")
+    )
+    app.training_window = SimpleNamespace(
+        window=SimpleNamespace(winfo_exists=lambda: True),
+        closing=False,
+        request_close=lambda: False,
+    )
+    app.close()
+    assert not app.closing and not app.video_cancel.is_set() and calls == []
+    app.training_window.closing = True
+    app.close()
+    assert calls[-1] == (50, app.close) and not app.closing
+    app.training_window.window.winfo_exists = lambda: False
+    app.close()
+    assert app.closing and calls[-1] == "destroy"
+
+
+def test_training_job_prevents_tracking_and_video_import(monkeypatch, camera_controls):
+    app, errors = camera_controls, []
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(
+            messagebox=SimpleNamespace(showerror=lambda *a, **kw: errors.append(a)),
+            filedialog=object(),
+        ),
+    )
+    app.training_window = SimpleNamespace(process=object())
+    app.start()
+    app.import_video()
+    assert len(errors) == 2 and app.session is None and app.video_thread is None
