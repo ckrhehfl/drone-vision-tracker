@@ -541,3 +541,65 @@ def test_editor_reviewed_labels_feed_existing_retraining_pipeline(learning_plan)
     summary = retrain.prepare(plan, output, "editor-labels")
     assert summary["splits"] == {s: {"images": 2, "objects": 1} for s in ("train", "val", "test")}
     assert retrain.read_json(output / "manifest.json")["status"] == "needs_review"
+
+
+def test_gui_sources_prepare_review_and_existing_train_preflight(learning_plan):
+    from tools.training_gui import approve_dataset, label_source, reviewed_plan
+
+    plan, output = learning_plan
+    entries = []
+    originals = {}
+    for split in ("train", "val", "test"):
+        folder = plan.parent / split
+        (folder / "record.json").rename(folder / "measurement.json")
+        originals.update({p: p.read_bytes() for p in folder.rglob("*") if p.is_file()})
+        entries.append(label_source(folder, split, split))
+    write_json(plan, reviewed_plan(entries))
+    retrain.prepare(plan, output, "gui-v1")
+    args = [
+        "--data",
+        str(output / "dataset.yaml"),
+        "--manifest",
+        str(output / "manifest.json"),
+        "--check-only",
+    ]
+    assert train_main(args) == 1  # Preparation cannot substitute for human data review.
+    summary = approve_dataset(output)
+    assert summary["splits"]["train"]["objects"] == 1
+    assert train_main(args) == 0
+    spec, _ = check_dataset(output / "dataset.yaml", output / "manifest.json")
+    assert "test" not in spec and all(p.read_bytes() == data for p, data in originals.items())
+
+
+@pytest.mark.parametrize("failure", ["replace", "conflict", "outside"])
+def test_gui_dataset_approval_preserves_existing_manifest_on_failure(
+    learning_plan, monkeypatch, failure
+):
+    import tools.training_gui as gui
+
+    plan, output = learning_plan
+    retrain.prepare(plan, output, "gui-v1")
+    path = output / "manifest.json"
+    before = path.read_bytes()
+    if failure == "replace":
+
+        def replace(*args):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(gui.os, "replace", replace)
+    else:
+        original = gui.check_dataset
+
+        def check(*args, **kwargs):
+            spec, summary = original(*args, **kwargs)
+            if failure == "outside":
+                spec["path"] = str(output.parent)
+            else:
+                path.write_bytes(before + b"\n")
+            return spec, summary
+
+        monkeypatch.setattr(gui, "check_dataset", check)
+    with pytest.raises((OSError, ValueError)):
+        gui.approve_dataset(output)
+    assert path.read_bytes() == (before + b"\n" if failure == "conflict" else before)
+    assert not list(output.glob(".manifest-*"))

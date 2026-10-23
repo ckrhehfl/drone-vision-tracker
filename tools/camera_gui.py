@@ -992,6 +992,7 @@ class CameraGUI:
         self.video_progress = (0.0, 0)
         self.metrics = None
         self.label_editor = None
+        self.training_window = None
         self.display_scale = 1.0
         self.display_offset = (0, 0)
         self.video_path = None
@@ -1376,34 +1377,37 @@ class CameraGUI:
         ttk.Button(self.learning_panel, text="수동 라벨 편집기", command=self.edit_labels).grid(
             row=4, sticky="ew", pady=4
         )
-        ttk.Separator(self.learning_panel).grid(row=5, sticky="ew", pady=22)
+        ttk.Button(
+            self.learning_panel, text="수동 라벨로 모델 학습", command=self.train_labels
+        ).grid(row=5, sticky="ew", pady=4)
+        ttk.Separator(self.learning_panel).grid(row=6, sticky="ew", pady=22)
         ttk.Label(self.learning_panel, text="측정 · 평가", style="Section.TLabel").grid(
-            row=6, sticky="w"
+            row=7, sticky="w"
         )
         ttk.Label(
             self.learning_panel,
             text="추적 정지 후 측정 기록을 저장하고\n같은 세션의 정답 파일로 평가하세요.",
             style="Muted.TLabel",
             wraplength=284,
-        ).grid(row=7, sticky="w", pady=(10, 16))
+        ).grid(row=8, sticky="w", pady=(10, 16))
         self.save_metrics_button = ttk.Button(
             self.learning_panel, text="측정 기록 저장", command=self.save_metrics, state="disabled"
         )
-        self.save_metrics_button.grid(row=8, sticky="ew", pady=4)
+        self.save_metrics_button.grid(row=9, sticky="ew", pady=4)
         self.evaluate_button = ttk.Button(
             self.learning_panel,
             text="정답 파일로 평가",
             command=self.evaluate_metrics,
             state="disabled",
         )
-        self.evaluate_button.grid(row=9, sticky="ew", pady=4)
+        self.evaluate_button.grid(row=10, sticky="ew", pady=4)
         ttk.Label(
             self.learning_panel,
             text="수집·가져오기에서 선택한 폴더에만\n원본 사진을 저장합니다.\n"
-            "모델 학습은 기존 재학습 도구를 사용합니다.",
+            "수동 라벨로 모델 학습에서\n데이터 준비·검수·추가 학습을 진행하세요.",
             style="Muted.TLabel",
             wraplength=284,
-        ).grid(row=10, sticky="w", pady=(20, 4))
+        ).grid(row=11, sticky="w", pady=(20, 4))
 
         preview = tk.Frame(content, background="#f7f9fc")
         preview.grid(row=1, column=1, sticky="nsew")
@@ -1657,6 +1661,8 @@ class CameraGUI:
         if self.session is not None or self.closing or self.video_thread is not None:
             return
         try:
+            if self.training_window is not None and self.training_window.process is not None:
+                raise ValueError("학습 창의 작업을 끝내거나 중지한 뒤 추적을 시작하세요.")
             camera = self.cameras.get(self.camera.get())
             if video_path is None and camera is None:
                 raise ValueError(
@@ -1783,6 +1789,11 @@ class CameraGUI:
 
         if self.session is not None or self.closing or self.video_thread is not None:
             return
+        if self.training_window is not None and self.training_window.process is not None:
+            from tkinter import messagebox
+
+            messagebox.showerror("학습 작업 실행 중", "학습 창의 작업을 끝내거나 중지하세요.")
+            return
         video = filedialog.askopenfilename(
             title="추가 학습용 로컬 동영상 선택",
             filetypes=[("동영상", "*.mp4 *.mov *.avi *.mkv *.webm"), ("모든 파일", "*.*")],
@@ -1839,8 +1850,8 @@ class CameraGUI:
             messagebox.showinfo(
                 "라벨 검수 후 추가 학습",
                 f"{count}장 저장: {output}\n\n"
-                "annotations.example.json을 annotations.json으로 복사해 드론 박스와 "
-                "배경을 검수하세요. 촬영 그룹 분할 후 기존 재학습 명령으로 준비·학습합니다.\n"
+                "수동 라벨 편집기에서 드론 박스와 배경을 검수 완료 저장(annotations.json)하세요.\n"
+                "수동 라벨로 모델 학습에서 독립 촬영 그룹을 지정해 준비·학습합니다.\n"
                 "자세한 순서: docs/retraining.md",
             )
 
@@ -2124,12 +2135,32 @@ class CameraGUI:
         else:
             self.label_editor = LabelEditor(self.root)
 
+    def train_labels(self):
+        from tools.training_gui import TrainingWindow
+
+        if self.closing:
+            return
+        if self.training_window is not None and self.training_window.window.winfo_exists():
+            self.training_window.window.lift()
+        else:
+            self.training_window = TrainingWindow(
+                self.root, can_run=lambda: self.session is None and self.video_thread is None
+            )
+
     def close(self):
         if (
             self.label_editor is not None
             and self.label_editor.window.winfo_exists()
             and not self.label_editor.request_close()
         ):
+            return
+        if (
+            self.training_window is not None
+            and self.training_window.window.winfo_exists()
+            and not self.training_window.request_close()
+        ):
+            if self.training_window.closing:
+                self.root.after(50, self.close)
             return
         self.closing = True
         self.video_cancel.set()
