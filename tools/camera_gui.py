@@ -114,8 +114,12 @@ def overlap(a, b):
 
 def choose_target(detections, previous):
     """Keep overlapping detections; never jump to another visible drone on loss."""
-    candidates = [d for d in detections if previous is None or overlap(d[:4], previous) >= 0.1]
-    return max(candidates, key=lambda d: d[4], default=None)
+    candidates = [d for d in detections if previous is None or overlap(d[:4], previous) >= 0.3]
+    return max(
+        candidates,
+        key=lambda d: (overlap(d[:4], previous) if previous is not None else 0, d[4]),
+        default=None,
+    )
 
 
 def template_sizes(template_shape, frame_shape):

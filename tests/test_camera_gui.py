@@ -386,6 +386,18 @@ def test_single_target_does_not_jump_on_loss():
     assert overlap((0, 0, 0, 0), (0, 0, 0, 0)) == 0
 
 
+def test_single_target_prefers_matching_box_over_confident_background_growth():
+    previous = (270, 922, 518, 1059)
+    drone = (272, 901, 520, 1061, 0.39)
+    background = (260, 864, 606, 1064, 0.52)
+    assert choose_target([background, drone], previous) == drone
+    previous = drone[:4]
+    expanded_background = (0, 0, 1080, 1359, 0.99)
+    assert choose_target([expanded_background], previous) is None
+    assert choose_target([(277, 899, 507, 1049, 0.3)], previous) is not None
+    assert choose_target([(260, 890, 540, 1080, 0.7)], previous) is not None
+
+
 @pytest.mark.parametrize("score,found", [(0.8, True), (0.2, False), (float("nan"), False)])
 def test_template_threshold(monkeypatch, score, found):
     cv = SimpleNamespace(
