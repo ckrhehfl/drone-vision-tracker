@@ -14,6 +14,7 @@ from tools.camera_gui import (
     MAX_AGE_S,
     CameraGUI,
     CameraSession,
+    YoloReacquisition,
     choose_target,
     color_mask,
     create_manual_tracker,
@@ -396,6 +397,64 @@ def test_single_target_prefers_matching_box_over_confident_background_growth():
     assert choose_target([expanded_background], previous) is None
     assert choose_target([(277, 899, 507, 1049, 0.3)], previous) is not None
     assert choose_target([(260, 890, 540, 1080, 0.7)], previous) is not None
+
+
+@pytest.mark.parametrize(
+    "times,confirmed",
+    [
+        ((0.2, 0.3, 0.4), True),
+        ((0.2, 0.49, 0.69), True),
+        ((0.2, 0.49, 0.71), False),
+        ((0.2, 0.2, 0.3), False),
+        ((0.2, 0.15, 0.25), False),
+    ],
+)
+def test_yolo_reacquisition_requires_three_new_frames_within_half_second(times, confirmed):
+    target = YoloReacquisition()
+    box = (10, 10, 30, 30, 0.8)
+    assert target.observe(box, 0) == (box, "YOLO")
+    assert target.observe(None, 0.1) == (None, "재검색")
+    for observed in times:
+        detection, method = target.observe(box, observed)
+    assert detection == (box if confirmed else None)
+    assert (method == "재획득") == confirmed
+    assert target.required != confirmed
+
+
+def test_yolo_reacquisition_discards_missing_changed_and_expired_candidates():
+    target = YoloReacquisition()
+    box, other = (10, 10, 30, 30, 0.8), (70, 70, 90, 90, 0.99)
+    target.lose()
+    target.observe(box, 0.1)
+    assert target.observe(other, 0.2) == (None, "재획득 확인 중 (1/3)")
+    assert target.observe(other, 0.3) == (None, "재획득 확인 중 (2/3)")
+    assert target.observe(None, 0.4) == (None, "재검색")
+    assert target.candidate is None
+    target.observe(other, 0.5)
+    assert target.candidate_for(1.01) is None
+    assert target.observe(other, 1.02) == (None, "재획득 확인 중 (1/3)")
+
+
+def test_yolo_repeated_large_background_cannot_replace_confirmed_target(run_yolo_frames):
+    box, background, returned = (
+        (10, 10, 30, 30, 0.9),
+        (0, 0, 100, 100, 0.99),
+        (70, 70, 90, 90, 0.8),
+    )
+    records, _ = run_yolo_frames(
+        [
+            (0, [box]),
+            (0.1, []),
+            (2.01, [background]),
+            (2.1, [background]),
+            (2.2, [background]),
+            (2.3, [returned]),
+            (2.4, [returned]),
+            (2.5, [returned]),
+        ]
+    )
+    assert [r[2] for r in records] == [box, None, None, None, None, None, None, returned]
+    assert all(r[5] == "재검색" for r in records[2:5])
 
 
 @pytest.mark.parametrize("score,found", [(0.8, True), (0.2, False), (float("nan"), False)])
@@ -1818,6 +1877,163 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     assert result[4] == target_crop(result[2], (1080, 1920))
 
 
+@pytest.fixture
+def run_yolo_frames(monkeypatch):
+    import tools.camera_gui as gui
+
+    clock, records = SimpleNamespace(now=10.0), []
+
+    class Frame:
+        def __init__(self, shape, boxes, offset=(0, 0)):
+            self.shape, self.boxes, self.offset = shape, boxes, offset
+
+        def __getitem__(self, slices):
+            y, x = slices
+            return Frame((y.stop - y.start, x.stop - x.start, 3), self.boxes, (x.start, y.start))
+
+    def run(rows, *, video=False, device="cpu"):
+        clock.now = 10.0
+        records.clear()
+        session = CameraSession.__new__(CameraSession)
+        session.model_path, session.threshold, session.device = "trusted-local.pt", 0.25, device
+        session.metrics = SessionMetrics({"source_type": "video_test" if video else "camera"})
+        session.stop = threading.Event()
+        session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
+        session.results = queue.Queue(maxsize=1)
+        index, delay = 0, 0.0
+
+        def get(timeout):
+            nonlocal index, delay
+            row = rows[index]
+            observed, boxes = row[:2]
+            delay = row[2] if len(row) > 2 else 0.0
+            shape = row[3] if len(row) > 3 else (100, 100, 3)
+            captured = clock.now if video else 10.0 + observed
+            clock.now = max(clock.now, captured)
+            if len(row) > 4:
+                clock.now += row[4]  # Age this input before inference.
+            session.video_timestamp, session.video_progress = observed, (observed, index + 1)
+            session.metrics.capture(
+                captured, shape, **({"video_time_s": observed} if video else {})
+            )
+            index += 1
+            if index == len(rows):
+                session.stop.set()
+            return captured, Frame(shape, boxes)
+
+        def predict(frame, **kwargs):
+            assert kwargs["device"] == ("0" if device == "cuda" else device)
+            clock.now += delay
+            x, y = frame.offset
+            coords = [[b[0] - x, b[1] - y, b[2] - x, b[3] - y] for b in frame.boxes]
+
+            def tensor(values):
+                return SimpleNamespace(cpu=lambda: SimpleNamespace(tolist=lambda: values))
+
+            return [
+                SimpleNamespace(
+                    boxes=SimpleNamespace(
+                        xyxy=tensor(coords), conf=tensor([b[4] for b in frame.boxes])
+                    )
+                )
+            ]
+
+        monkeypatch.setitem(
+            sys.modules,
+            "ultralytics",
+            SimpleNamespace(
+                YOLO=lambda _: SimpleNamespace(task="detect", names={0: "drone"}, predict=predict)
+            ),
+        )
+        session.frames = SimpleNamespace(get=get)
+        session.process()
+        assert session.errors.empty(), list(session.errors.queue)
+        return list(records), session.metrics.report()["frames"]
+
+    monkeypatch.setattr(gui.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(gui, "put_latest", lambda channel, item: records.append(item) or False)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: True),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        ),
+    )
+    return run
+
+
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
+def test_yolo_loss_clears_observation_until_three_confirmed_frames(run_yolo_frames, video, device):
+    box = (10, 10, 30, 30, 0.9)
+    rows = [(0, [box]), (0.1, []), (0.2, [box]), (0.3, [box]), (0.4, [box])]
+    if video:
+        rows = [(t, boxes, 0.8) for t, boxes in rows]  # Offline wall time is not video time.
+    records, frames = run_yolo_frames(rows, video=video, device=device)
+    assert [r[2] for r in records] == [box, None, None, None, box]
+    assert [r[5] for r in records] == [
+        "YOLO",
+        "재검색",
+        "재획득 확인 중 (1/3)",
+        "재획득 확인 중 (2/3)",
+        "재획득",
+    ]
+    assert [r["box"] for r in frames] == [list(box[:4]), None, None, None, list(box[:4])]
+
+
+def test_yolo_late_result_and_processing_gap_require_new_confirmation(run_yolo_frames):
+    box = (10, 10, 30, 30, 0.9)
+    records, _ = run_yolo_frames(
+        [
+            (0, [box], 0.49),
+            (0.51, [box]),
+            (0.61, [box]),
+            (0.71, [box], 0.6),
+            (1.4, [box]),
+            (1.5, [box]),
+            (1.6, [box]),
+        ]
+    )
+    assert [r[2] for r in records] == [box, None, None, None, None, None, box]
+    assert records[3][5] == "재검색"
+    assert records[4][5] == "재획득 확인 중 (1/3)"
+
+
+def test_yolo_stale_input_invalidates_target_and_candidate(run_yolo_frames):
+    box = (10, 10, 30, 30, 0.9)
+    records, frames = run_yolo_frames(
+        [(0, [box]), (0.1, [box], 0, (100, 100, 3), 0.6), (0.8, [box]), (0.9, [box]), (1.0, [box])]
+    )
+    assert [r[2] for r in records] == [box, None, None, box]
+    assert not frames[1]["processed"] and frames[1]["box"] is None
+
+
+def test_yolo_releases_old_position_after_two_seconds_but_confirms_new_candidate(run_yolo_frames):
+    box, other = (10, 10, 30, 30, 0.9), (70, 70, 90, 90, 0.95)
+    records, _ = run_yolo_frames(
+        [(0, [box]), (0.1, []), (0.2, [other]), (2.01, [other]), (2.1, [other]), (2.2, [other])]
+    )
+    assert [r[2] for r in records] == [box, None, None, None, None, other]
+    assert records[-3][5] == "재획득 확인 중 (1/3)"
+
+
+def test_yolo_geometry_change_discards_partial_confirmation(run_yolo_frames):
+    box = (10, 10, 30, 30, 0.9)
+    records, _ = run_yolo_frames(
+        [
+            (0, [box]),
+            (0.1, []),
+            (0.2, [box]),
+            (0.3, [box], 0, (200, 200, 3)),
+            (0.4, [box], 0, (200, 200, 3)),
+            (0.5, [box], 0, (200, 200, 3)),
+        ]
+    )
+    assert [r[2] for r in records] == [box, None, None, None, None, box]
+    assert records[2][5] == records[3][5] == "재획득 확인 중 (1/3)"
+
+
 def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     monkeypatch, camera_controls, tmp_path
 ):
@@ -2022,8 +2238,9 @@ def test_video_errors_and_stop_release_file_and_never_claim_full_completion(vide
     assert (session.metrics.error is None) == (failure == "stop")
 
 
+@pytest.mark.parametrize("method", ["YOLO", "재검색", "재획득 확인 중 (1/3)"])
 def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
-    monkeypatch, camera_controls
+    monkeypatch, camera_controls, method
 ):
     import tools.camera_gui as gui
 
@@ -2058,7 +2275,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         alive=lambda: False,
         finish=metrics.finish,
     )
-    session.results.put((captured, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (0, 1)))
+    session.results.put((captured, (100, 100), None, 1.0, (0, 0, 100, 100), method, frame, (0, 1)))
     app.session = session
     monkeypatch.setitem(
         sys.modules,
@@ -2085,6 +2302,9 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     assert app.actual_resolution.get() == "100×100"
     assert app.processing_time.get() == "1000ms"
     assert app.observed.get() == "—  미관측"
+    if method != "YOLO":
+        assert "추적 갱신 중단" in app.status.get()
+        assert ("대상 소실" if method == "재검색" else method) in app.observation_state.get()
     # The next frame is in inference; its capture progress must not relabel the visible frame.
     session.video_timestamp = 9.0
     metrics.capture(captured + 1, frame.shape, video_time_s=9.0)

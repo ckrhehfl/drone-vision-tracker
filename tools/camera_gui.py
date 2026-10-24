@@ -122,6 +122,53 @@ def choose_target(detections, previous):
     )
 
 
+class YoloReacquisition:
+    """Confirm a lost target on three consistent fresh frames before publishing it."""
+
+    def __init__(self):
+        self.required = False
+        self.candidate = None
+        self.confirmed_box = None
+        self.first_seen, self.last_seen, self.count = 0.0, 0.0, 0
+
+    def lose(self):
+        self.required = True
+        self.candidate = None
+        self.count = 0
+
+    def candidate_for(self, observed):
+        if self.candidate is not None and not (
+            0 < observed - self.last_seen <= MAX_AGE_S
+            and 0 < observed - self.first_seen <= MAX_AGE_S
+        ):
+            self.lose()
+        return self.candidate
+
+    def observe(self, detection, observed):
+        if detection is None:
+            self.lose()
+            return None, "재검색"
+        if not self.required:
+            return detection, "YOLO"
+        if self.confirmed_box is not None:
+            x1, y1, x2, y2 = self.confirmed_box
+            area = (detection[2] - detection[0]) * (detection[3] - detection[1])
+            # shortcut: large scale jumps need a new session or better identity evidence.
+            if area > 4 * (x2 - x1) * (y2 - y1):
+                self.lose()
+                return None, "재검색"
+        previous = self.candidate_for(observed)
+        if previous is not None and overlap(previous, detection[:4]) >= 0.3:
+            self.count += 1
+        else:
+            self.first_seen, self.count = observed, 1
+        self.candidate, self.last_seen = detection[:4], observed
+        if self.count < 3:
+            return None, f"재획득 확인 중 ({self.count}/3)"
+        self.required, self.candidate = False, None
+        return detection, "재획득"
+
+
 def template_sizes(template_shape, frame_shape):
     """Try the original size first, then 10% scale steps between 0.1x and 2x."""
     height, width = template_shape[:2]
@@ -669,6 +716,7 @@ class CameraSession:
             )
             motion_frame, motion_time = None, 0.0
             signature, pending = None, None
+            yolo = YoloReacquisition()
             scan_index = 0
             last_seen = 0.0 if video_input else time.monotonic()
             while not self.stop.is_set():
@@ -677,12 +725,22 @@ class CameraSession:
                 except queue.Empty:
                     continue
                 started = time.monotonic()
-                tracking_time = self.video_timestamp if video_input else started
+                tracking_time = (
+                    self.video_timestamp
+                    if video_input
+                    else captured
+                    if model is not None
+                    else started
+                )
                 if not video_input and started - captured > MAX_AGE_S:
+                    yolo.lose()
                     self.metrics.discard("stale_input")
                     continue
                 shape = frame.shape[:2]
                 if geometry != shape:
+                    if geometry is not None:
+                        yolo.lose()
+                    yolo.confirmed_box = None
                     template, previous, geometry, scan_index = None, None, shape, 0
                     recent_template = None
                     signature, pending = None, None
@@ -690,6 +748,8 @@ class CameraSession:
                     tracker_ready = False
                 try:
                     selection = self.selections.get_nowait()
+                    yolo.lose()
+                    yolo.confirmed_box = None
                     template, previous, scan_index = None, None, 0
                     recent_template = None
                     signature, pending = None, None
@@ -706,6 +766,9 @@ class CameraSession:
                             tracker_ready = True
                 except queue.Empty:
                     pass
+                if previous is not None and tracking_time - last_seen > MAX_AGE_S:
+                    if not yolo.required:
+                        yolo.lose()
                 if tracking_time - last_seen > 2.0:
                     previous = None
                     motion_frame = None
@@ -732,6 +795,9 @@ class CameraSession:
                     if model is None and (scan_index // (len(tiles) + 1)) % 2 == 0:
                         search_template = recent_template
                     scan_index += 1
+                yolo_candidate = yolo.candidate_for(tracking_time)
+                if model is not None and yolo_candidate is not None:
+                    region = target_crop(yolo_candidate, shape)
                 detection = None
                 candidate = None
                 method = "YOLO" if model else "템플릿"
@@ -904,7 +970,9 @@ class CameraSession:
                         )
                     ]
                     # ponytail: IoU needs overlapping boxes; add an ID tracker for fast motion.
-                    detection = choose_target(detections, previous)
+                    detection, method = yolo.observe(
+                        choose_target(detections, yolo_candidate or previous), tracking_time
+                    )
                 appearance = None
                 if model is None and detection is not None:
                     x1, y1, x2, y2 = (round(v) for v in detection[:4])
@@ -925,12 +993,17 @@ class CameraSession:
                     detection = None
                     candidate, pending = None, None
                     tracker_ready = False
+                    if model is not None:
+                        yolo.lose()
+                        method = "재검색"
                 elif candidate is not None:
                     pending = captured, frame, candidate
                 elif detection is not None:
                     pending = None
                     previous = detection[:4]
-                    last_seen = tracking_time if video_input else finished
+                    last_seen = tracking_time if video_input or model is not None else finished
+                    if model is not None:
+                        yolo.confirmed_box = detection[:4]
                     if appearance is not None:
                         recent_template = appearance
                 if model is None:
@@ -2045,10 +2118,13 @@ class CameraGUI:
                     self.processing_time.set(
                         f"{observation[3] * 1000:.0f}ms" if observation else "—"
                     )
-                    self.set_observation(
-                        "대상 추적 중" if detection else "대상 미관측",
-                        "#46df98" if detection else "#a9bdd6",
-                    )
+                    state = "대상 추적 중" if detection else "대상 미관측"
+                    if observation and not detection:
+                        if observation[5] == "재검색":
+                            state = "대상 소실 · 재검색"
+                        elif observation[5].startswith("재획득 확인 중"):
+                            state = observation[5]
+                    self.set_observation(state, "#46df98" if detection else "#a9bdd6")
                     cv2.drawMarker(
                         rendered, (w // 2, h // 2), (255, 255, 255), cv2.MARKER_CROSS, 20, 1
                     )
@@ -2058,9 +2134,9 @@ class CameraGUI:
                         else "드론을 드래그해 지정하세요 / 대상 소실"
                     )
                     if observation and observation[5] == "재검색":
-                        info = "지정 대상 재검색 중 · 재진입 대기"
-                    elif observation and observation[5] == "재획득 확인 중":
-                        info = "재진입 후보 확인 중 · 다음 관측 대기"
+                        info = "대상 소실 · 추적 갱신 중단 · 현재 영상에서 재검색"
+                    elif observation and observation[5].startswith("재획득 확인 중"):
+                        info = f"{observation[5]} · 추적 갱신 중단 · 다음 관측 대기"
                     if observation:
                         region = observation[4]
                         if region != (0, 0, w, h):
