@@ -132,6 +132,7 @@ def camera_controls():
     app.panel_view = SimpleNamespace(yview_moveto=lambda value: None)
     app.video_path = None
     app.display_offset, app.display_scale = (0, 0), 1.0
+    app.render_key = None
     for name in (
         "camera",
         "status",
@@ -2238,6 +2239,175 @@ def test_video_errors_and_stop_release_file_and_never_claim_full_completion(vide
     assert (session.metrics.error is None) == (failure == "stop")
 
 
+@pytest.fixture
+def preview_poll(monkeypatch, camera_controls):
+    from unittest.mock import Mock
+
+    import tools.camera_gui as gui
+
+    app = camera_controls
+    now = [10.0]
+    monkeypatch.setattr(gui.time, "monotonic", lambda: now[0])
+    frame = SimpleNamespace(shape=(100, 200, 3))
+    frame.copy = Mock(return_value=frame)
+    cv2 = SimpleNamespace(
+        drawMarker=Mock(),
+        rectangle=Mock(),
+        line=Mock(),
+        resize=Mock(return_value=frame),
+        cvtColor=Mock(return_value=frame),
+        MARKER_CROSS=0,
+        INTER_AREA=0,
+        COLOR_BGR2RGB=0,
+    )
+    photo = Mock(side_effect=lambda image: object())
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    monkeypatch.setitem(
+        sys.modules,
+        "PIL",
+        SimpleNamespace(
+            Image=SimpleNamespace(fromarray=Mock(return_value=frame)),
+            ImageTk=SimpleNamespace(PhotoImage=photo),
+        ),
+    )
+    app.canvas.delete = Mock()
+    app.canvas.create_image = Mock()
+    app.root = SimpleNamespace(after=Mock())
+    app.capture_info = type(app.status)()
+    app.drag_start, app.selection_time = None, 0.0
+    metrics = SessionMetrics()
+    session = SimpleNamespace(
+        metrics=metrics,
+        model_path=None,
+        resolution=(200, 100),
+        manual_engine="test",
+        collector=None,
+        errors=queue.Queue(),
+        results=queue.Queue(),
+        previews=queue.Queue(),
+        selections=queue.Queue(),
+        stop=threading.Event(),
+        paused=threading.Event(),
+        alive=lambda: False,
+        finish=metrics.finish,
+    )
+    app.session = session
+    session.previews.put((now[0], frame))
+    session.results.put((now[0], (100, 200), (10, 10, 30, 30, 0.9), 0.02, (0, 0, 80, 80), "test"))
+    return app, frame, now, cv2, photo
+
+
+def test_poll_reuses_pixels_but_refreshes_status_metrics_and_timer(preview_poll):
+    app, frame, now, cv2, photo = preview_poll
+    app.poll()
+    first_photo = app.photo
+    calls = [
+        frame.copy,
+        cv2.drawMarker,
+        cv2.rectangle,
+        cv2.line,
+        cv2.resize,
+        cv2.cvtColor,
+        photo,
+        app.canvas.delete,
+        app.canvas.create_image,
+    ]
+    before = [call.call_count for call in calls]
+    old_status, old_performance = app.status.get(), app.performance.get()
+    # Quality, timing and subpixel movement affect labels, but not the drawn integer box.
+    app.session.results.put(
+        (10.0, (100, 200), (10.1, 10, 30, 30, 0.8), 0.04, (0, 0, 80, 80), "new")
+    )
+    app.session.metrics.discard("tracking_replaced")
+    for _ in range(5):
+        now[0] += 0.03
+        app.poll()
+    assert [call.call_count for call in calls] == before
+    assert app.photo is first_photo
+    assert app.status.get() != old_status and "품질 0.80" in app.status.get()
+    assert "150ms 전" in app.status.get() and app.processing_time.get() == "40ms"
+    assert app.performance.get() != old_performance
+    assert app.session.metrics.snapshot()["counts"]["display"] == 1
+    assert app.root.after.call_count == 6
+    assert all(call.args == (30, app.poll) for call in app.root.after.call_args_list)
+
+
+@pytest.mark.parametrize("change", ["frame", "box", "region", "size", "loss", "clear", "expired"])
+def test_poll_redraws_when_visible_content_changes(preview_poll, change):
+    app, frame, now, cv2, photo = preview_poll
+    app.poll()
+    first_photo = app.photo
+    if change == "frame":
+        app.session.previews.put((10.1, frame))
+        now[0] = 10.1
+    elif change in ("box", "region", "loss"):
+        result = list(app.result)
+        if change == "box":
+            result[2] = (20, 20, 40, 40, 0.9)
+        elif change == "region":
+            result[4] = (10, 10, 90, 90)
+        else:
+            result[2], result[4], result[5] = None, (0, 0, 200, 100), "재검색"
+        app.session.results.put(tuple(result))
+    elif change == "size":
+        app.canvas.winfo_height = lambda: 600  # Same scale, different letterbox offset.
+    elif change == "clear":
+        app.clear()
+    else:
+        # The observation expires while the newer camera frame stays fresh.
+        now[0] = 10.4
+        app.session.previews.put((10.4, frame))
+        app.poll()
+        now[0] = 10.51
+    before = photo.call_count
+    rectangles, lines = cv2.rectangle.call_count, cv2.line.call_count
+    app.poll()
+    assert photo.call_count == before + 1 and app.photo is not first_photo
+    assert frame.copy.call_count == cv2.resize.call_count == photo.call_count
+    if change in ("loss", "clear", "expired"):
+        assert cv2.rectangle.call_count == rectangles and cv2.line.call_count == lines
+        assert app.observed.get() == "—  미관측"
+    if change == "size":
+        assert app.display_offset == (0, 140)
+    app.poll()
+    assert photo.call_count == before + 1
+
+
+def test_poll_clears_stale_camera_and_renders_after_restart(preview_poll, monkeypatch):
+    import tools.camera_gui as gui
+
+    app, frame, now, _, photo = preview_poll
+    app.poll()
+    session = app.session
+    now[0] = 10.51
+    app.poll()
+    assert app.frame is None and app.render_key is None
+    assert "새 영상 대기" in app.status.get() and app.processing_time.get() == "—"
+    session.previews.put((now[0], frame))
+    app.poll()
+    assert photo.call_count == 2
+    app.stop()
+    assert app.frame is None and app.render_key is None
+    app.poll()
+    assert app.session is None
+    # A new session must repaint even if its test frame and timestamp match the old one.
+    session.stop.clear()
+    app.cameras["test"] = {"id": "test"}
+    app.camera.set("test")
+    monkeypatch.setattr(gui, "CameraSession", lambda *a: session)
+    monkeypatch.setitem(sys.modules, "tkinter", SimpleNamespace(messagebox=None))
+    app.start()
+    session.previews.put((now[0], frame))
+    app.poll()
+    assert photo.call_count == 3
+    session.errors.put("입력 오류")
+    session.metrics.fail("입력 오류")
+    app.poll()
+    assert app.session is None and app.frame is None and app.render_key is None
+    assert app.status.get() == "입력 오류" and app.run_state.get() == "●  오류"
+    assert photo.call_count == 3
+
+
 @pytest.mark.parametrize("method", ["YOLO", "재검색", "재획득 확인 중 (1/3)"])
 def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     monkeypatch, camera_controls, method
@@ -2246,7 +2416,9 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
 
     app = camera_controls
     frame = SimpleNamespace(shape=(100, 100, 3))
-    frame.copy = lambda: frame
+    from unittest.mock import Mock
+
+    frame.copy = Mock(return_value=frame)
     app.canvas = SimpleNamespace(
         delete=lambda *a: None,
         winfo_width=lambda: 100,
@@ -2299,6 +2471,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     )
     app.poll()
     assert session.video_displayed == captured and app.frame is frame
+    assert frame.copy.call_count == 1
     assert app.actual_resolution.get() == "100×100"
     assert app.processing_time.get() == "1000ms"
     assert app.observed.get() == "—  미관측"
@@ -2309,7 +2482,10 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     session.video_timestamp = 9.0
     metrics.capture(captured + 1, frame.shape, video_time_s=9.0)
     session.paused.set()
+    before_performance = app.performance.get()
     app.poll()
+    assert frame.copy.call_count == 1
+    assert app.performance.get() != before_performance
     assert app.frame is frame and "일시정지" in app.status.get()
     assert app.run_state.get() == "●  일시정지"
     assert "0.00초" in app.capture_info.get() and "1/2프레임" in app.status.get()
@@ -2317,6 +2493,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         (captured + 1, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (9.0, 2))
     )
     app.poll()
+    assert frame.copy.call_count == 2 and session.video_displayed == captured + 1
     assert "9.00초" in app.capture_info.get() and "2/2프레임" in app.status.get()
     session.metrics.settings["video_complete"] = True
     session.stop.set()

@@ -1065,6 +1065,7 @@ class CameraGUI:
         self.video_cancel = threading.Event()
         self.video_results = queue.Queue(maxsize=1)
         self.drag_start, self.selection, self.photo = None, None, None
+        self.render_key = None
         self.result, self.selection_time = None, 0.0
         self.video_progress = (0.0, 0)
         self.metrics = None
@@ -1657,6 +1658,7 @@ class CameraGUI:
     def draw_empty_preview(self, _event=None):
         if self.frame is not None:
             return
+        self.render_key = None
         self.canvas.delete("empty")
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         self.canvas.create_text(
@@ -1980,6 +1982,7 @@ class CameraGUI:
             self.selection_time = time.monotonic()
             put_latest(self.session.selections, None)
             self.result = None
+            self.render_key = None
             self.set_observation("대상 지정 대기")
             self.status.set("대상 해제 · 드론을 다시 드래그하세요.")
 
@@ -2024,6 +2027,7 @@ class CameraGUI:
                 self.selection_time = time.monotonic()
                 put_latest(self.session.selections, (template, box, self.frame, self.last_display))
                 self.result = None
+                self.render_key = None
         self.drag_start = None
         self.canvas.delete("selection")
 
@@ -2093,7 +2097,6 @@ class CameraGUI:
                 age = now - captured
                 if self.frame is not None and (video_input or age <= MAX_AGE_S):
                     frame = self.frame
-                    rendered = frame.copy()
                     h, w = frame.shape[:2]
                     self.actual_resolution.set(f"{w}×{h}")
                     paused = video_input and session.paused.is_set()
@@ -2125,9 +2128,6 @@ class CameraGUI:
                         elif observation[5].startswith("재획득 확인 중"):
                             state = observation[5]
                     self.set_observation(state, "#46df98" if detection else "#a9bdd6")
-                    cv2.drawMarker(
-                        rendered, (w // 2, h // 2), (255, 255, 255), cv2.MARKER_CROSS, 20, 1
-                    )
                     info = (
                         "대상 미관측"
                         if session.model_path
@@ -2137,37 +2137,49 @@ class CameraGUI:
                         info = "대상 소실 · 추적 갱신 중단 · 현재 영상에서 재검색"
                     elif observation and observation[5].startswith("재획득 확인 중"):
                         info = f"{observation[5]} · 추적 갱신 중단 · 다음 관측 대기"
-                    if observation:
-                        region = observation[4]
-                        if region != (0, 0, w, h):
-                            cv2.rectangle(rendered, region[:2], region[2:], (255, 180, 0), 1)
+                    region = observation[4] if observation else None
+                    if region == (0, 0, w, h):
+                        region = None
+                    box = tuple(int(v) for v in detection[:4]) if detection else None
                     if detection:
-                        x1, y1, x2, y2 = (int(v) for v in detection[:4])
+                        x1, y1, x2, y2 = box
                         center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                        cv2.rectangle(rendered, (x1, y1), (x2, y2), (80, 220, 80), 2)
-                        cv2.line(rendered, (w // 2, h // 2), center, (80, 220, 80), 1)
                         info = (
                             f"최근 관측 · {observation[5]} 품질 {detection[4]:.2f} · "
                             f"중심 오차 x={center[0] - w // 2:+d}, y={center[1] - h // 2:+d}px · "
                             f"{(now - observation[0]) * 1000:.0f}ms 전"
                         )
-                    self.display_scale = min(
-                        self.canvas.winfo_width() / w, self.canvas.winfo_height() / h
-                    )
-                    size = (
-                        max(1, int(w * self.display_scale)),
-                        max(1, int(h * self.display_scale)),
-                    )
-                    preview = cv2.resize(rendered, size, interpolation=cv2.INTER_AREA)
-                    rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
-                    self.photo = ImageTk.PhotoImage(Image.fromarray(rgb))
-                    self.canvas.delete("all")
-                    self.display_offset = (
-                        (self.canvas.winfo_width() - size[0]) // 2,
-                        (self.canvas.winfo_height() - size[1]) // 2,
-                    )
-                    self.canvas.create_image(*self.display_offset, anchor="nw", image=self.photo)
-                    session.metrics.displayed(captured, time.monotonic())
+                    canvas_size = (self.canvas.winfo_width(), self.canvas.winfo_height())
+                    # Published frames stay unchanged; only pixel inputs invalidate the image.
+                    render_key = (captured, id(frame), box, region, canvas_size)
+                    if render_key != self.render_key:
+                        rendered = frame.copy()
+                        cv2.drawMarker(
+                            rendered, (w // 2, h // 2), (255, 255, 255), cv2.MARKER_CROSS, 20, 1
+                        )
+                        if region is not None:
+                            cv2.rectangle(rendered, region[:2], region[2:], (255, 180, 0), 1)
+                        if box is not None:
+                            cv2.rectangle(rendered, box[:2], box[2:], (80, 220, 80), 2)
+                            cv2.line(rendered, (w // 2, h // 2), center, (80, 220, 80), 1)
+                        self.display_scale = min(canvas_size[0] / w, canvas_size[1] / h)
+                        size = (
+                            max(1, int(w * self.display_scale)),
+                            max(1, int(h * self.display_scale)),
+                        )
+                        preview = cv2.resize(rendered, size, interpolation=cv2.INTER_AREA)
+                        rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+                        self.photo = ImageTk.PhotoImage(Image.fromarray(rgb))
+                        self.canvas.delete("all")
+                        self.display_offset = (
+                            (canvas_size[0] - size[0]) // 2,
+                            (canvas_size[1] - size[1]) // 2,
+                        )
+                        self.canvas.create_image(
+                            *self.display_offset, anchor="nw", image=self.photo
+                        )
+                        self.render_key = render_key
+                        session.metrics.displayed(captured, time.monotonic())
                     processing = (
                         f" · 추적 처리 {observation[3] * 1000:.0f}ms" if observation else ""
                     )
