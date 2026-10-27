@@ -133,6 +133,7 @@ def camera_controls():
     app.video_path = None
     app.display_offset, app.display_scale = (0, 0), 1.0
     app.render_key = None
+    app.next_poll = 0.0
     for name in (
         "camera",
         "status",
@@ -165,6 +166,7 @@ def camera_controls():
         ("model", ""),
         ("device", "cpu"),
         ("resolution", "1920×1080"),
+        ("preview_fps", "60"),
         ("source", "camera"),
         ("page", "tracking"),
     ):
@@ -217,12 +219,16 @@ def test_camera_menu_defaults_to_mac_and_preserves_usb_identity(monkeypatch, cam
 
 
 @pytest.mark.parametrize("device", ["mps", "cpu", "cuda"])
-def test_camera_start_passes_selected_identity_and_locks_menu(monkeypatch, camera_controls, device):
+@pytest.mark.parametrize("fps", ["30", "60"])
+def test_camera_start_passes_selected_identity_and_locks_menu(
+    monkeypatch, camera_controls, device, fps
+):
     import tools.camera_gui as gui
 
     camera = {"id": "usb", "index": 7, "name": "Webcam"}
     app, calls, errors = camera_controls, [], []
     app.device.set(device)
+    app.preview_fps.set(fps)
     app.cameras["USB 카메라 · Webcam"] = camera
     app.camera.set("USB 카메라 · Webcam")
     monkeypatch.setitem(
@@ -239,6 +245,7 @@ def test_camera_start_passes_selected_identity_and_locks_menu(monkeypatch, camer
     app.start()
     assert calls == [(camera, None, 0.65, device, (1920, 1080))]
     assert errors == []
+    assert app.metrics.settings["preview_target_fps"] == int(fps)
     assert all(
         widget.options["state"] == "disabled"
         for widget in (app.camera_select, app.refresh_button, app.start_button)
@@ -255,6 +262,24 @@ def test_camera_start_passes_selected_identity_and_locks_menu(monkeypatch, camer
     app.closing = True
     app.start()
     assert len(calls) == 1 and len(errors) == 1
+
+
+@pytest.mark.parametrize("fps", ["0", "-30", "120", "invalid"])
+def test_invalid_preview_fps_never_starts_capture(monkeypatch, camera_controls, fps):
+    import tools.camera_gui as gui
+
+    app, errors = camera_controls, []
+    app.cameras["test"] = {"id": "test"}
+    app.camera.set("test")
+    app.preview_fps.set(fps)
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(messagebox=SimpleNamespace(showerror=lambda *a: errors.append(a))),
+    )
+    monkeypatch.setattr(gui, "CameraSession", lambda *a: pytest.fail("Invalid FPS opens no input"))
+    app.start()
+    assert app.session is None and "30 또는 60" in errors[0][1]
 
 
 @pytest.mark.parametrize("alive", [False, True])
@@ -331,6 +356,7 @@ def test_capture_resolves_selected_id_and_rejects_connection_changes(monkeypatch
             CAP_ANY=0,
             CAP_PROP_FRAME_WIDTH=3,
             CAP_PROP_FRAME_HEIGHT=4,
+            CAP_PROP_FPS=5,
             VideoCapture=open_camera,
         ),
     )
@@ -493,6 +519,7 @@ def test_camera_failure_releases_device(monkeypatch):
         CAP_ANY=0,
         CAP_PROP_FRAME_WIDTH=3,
         CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
         VideoCapture=lambda *args: camera,
     )
     monkeypatch.setitem(sys.modules, "cv2", cv)
@@ -1394,7 +1421,8 @@ def test_manual_worker_skips_search_when_target_colors_are_absent(monkeypatch, m
     assert record[2] is None and record[5] == "재검색"
 
 
-def test_camera_publishes_preview_without_waiting_for_worker(monkeypatch):
+@pytest.mark.parametrize("fps_accepted", [True, False])
+def test_camera_publishes_preview_without_waiting_for_worker(monkeypatch, fps_accepted):
     session = CameraSession.__new__(CameraSession)
     session.collector = None
     session.collection_lock = threading.Lock()
@@ -1407,6 +1435,7 @@ def test_camera_publishes_preview_without_waiting_for_worker(monkeypatch):
     session.previews = queue.Queue(maxsize=1)
     session.results = queue.Queue(maxsize=1)
     readings = iter([SimpleNamespace(name=f"frame-{i}", shape=(480, 640, 3)) for i in (1, 2, 3)])
+    requests = []
 
     def read():
         frame = next(readings)
@@ -1419,8 +1448,12 @@ def test_camera_publishes_preview_without_waiting_for_worker(monkeypatch):
         CAP_ANY=0,
         CAP_PROP_FRAME_WIDTH=3,
         CAP_PROP_FRAME_HEIGHT=4,
+        CAP_PROP_FPS=5,
         VideoCapture=lambda *args: SimpleNamespace(
-            isOpened=lambda: True, set=lambda *args: None, read=read, release=lambda: None
+            isOpened=lambda: True,
+            set=lambda *args: requests.append(args) or fps_accepted,
+            read=read,
+            release=lambda: None,
         ),
     )
     monkeypatch.setitem(sys.modules, "cv2", cv)
@@ -1429,6 +1462,8 @@ def test_camera_publishes_preview_without_waiting_for_worker(monkeypatch):
     assert session.previews.get_nowait()[1].name == "frame-3"
     assert session.frames.get_nowait()[1].name == "frame-3"
     assert session.errors.empty()
+    assert requests == [(3, 1920), (4, 1080), (5, 60)]
+    assert session.metrics.settings["requested_fps"] == 60
     summary = session.metrics.snapshot()
     assert summary["counts"]["capture"] == 3
     assert summary["counts"]["tracking_replaced"] == 2
@@ -2187,6 +2222,7 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
     assert first[7] == (0.0, 1)
     session.paused.set()
     session.video_displayed = first[0]
+    session.display_ack.set()
     with pytest.raises(queue.Empty):
         session.results.get(timeout=0.08)
     session.paused.clear()
@@ -2195,6 +2231,7 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
         assert result[2] == first[2] and result[6].shape == (100, 100, 3)
         assert not session.stop.is_set()  # EOF cannot discard the final result.
         session.video_displayed = result[0]
+        session.display_ack.set()
     for thread in session.threads:
         thread.join(timeout=2)
     session.finish()
@@ -2207,6 +2244,52 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
     assert session.previews.empty() and session.collector is None
     with pytest.raises(ValueError, match="학습 수집과 별개"):
         session.start_collection("unused")
+
+
+def test_video_display_ack_wakes_immediately_and_stale_ack_cannot_skip_frame(monkeypatch, tmp_path):
+    session = CameraSession.__new__(CameraSession)
+    session.video_path, model = tmp_path / "video.mp4", tmp_path / "local.pt"
+    session.video_path.write_bytes(b"synthetic video")
+    model.write_bytes(b"synthetic weights")
+    session.model_path = str(model)
+    session.metrics = SessionMetrics({"source_type": "video_test"})
+    session.errors, session.paused = queue.Queue(), threading.Event()
+    session.video_displayed = 0
+    stopped, published, waits, clears, released = [], [], [], [], []
+    session.stop = SimpleNamespace(
+        is_set=lambda: bool(stopped),
+        set=lambda: stopped.append(True),
+        wait=lambda _: pytest.fail("A displayed frame must not wait on the stop timer"),
+    )
+
+    def wait(timeout):
+        assert len(published) == 1
+        waits.append(timeout)
+        assert len(waits) <= 2
+        if len(waits) == 2:
+            session.video_displayed = published[0][0]
+        return True  # The first notification belongs to an older frame.
+
+    session.display_ack = SimpleNamespace(wait=wait, clear=lambda: clears.append(True))
+    session.frames = SimpleNamespace(put_nowait=published.append)
+    frames = iter([(True, SimpleNamespace(shape=(100, 200, 3))), (False, None)])
+    capture = SimpleNamespace(
+        isOpened=lambda: True,
+        get=lambda key: 1 if key == 1 else 0,
+        read=lambda: next(frames),
+        release=lambda: released.append(True),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        SimpleNamespace(
+            VideoCapture=lambda path: capture, CAP_PROP_FRAME_COUNT=1, CAP_PROP_POS_MSEC=2
+        ),
+    )
+    session.capture_video()
+    assert waits == [0.02, 0.02] and len(clears) == 2
+    assert released == [True] and session.errors.empty()
+    assert session.metrics.settings["video_complete"] is True
 
 
 @pytest.mark.parametrize("failure", ["open", "count", "timestamp", "decode", "inference", "stop"])
@@ -2229,6 +2312,7 @@ def test_video_errors_and_stop_release_file_and_never_claim_full_completion(vide
             if failure == "stop":
                 session.stop.set()
             session.video_displayed = result[0]
+            session.display_ack.set()
         except queue.Empty:
             assert session.stop.is_set() or session.alive()
     for thread in session.threads:
@@ -2247,6 +2331,7 @@ def preview_poll(monkeypatch, camera_controls):
 
     app = camera_controls
     now = [10.0]
+    app.next_poll = now[0]
     monkeypatch.setattr(gui.time, "monotonic", lambda: now[0])
     frame = SimpleNamespace(shape=(100, 200, 3))
     frame.copy = Mock(return_value=frame)
@@ -2288,6 +2373,7 @@ def preview_poll(monkeypatch, camera_controls):
         selections=queue.Queue(),
         stop=threading.Event(),
         paused=threading.Event(),
+        display_ack=threading.Event(),
         alive=lambda: False,
         finish=metrics.finish,
     )
@@ -2329,7 +2415,50 @@ def test_poll_reuses_pixels_but_refreshes_status_metrics_and_timer(preview_poll)
     assert app.performance.get() != old_performance
     assert app.session.metrics.snapshot()["counts"]["display"] == 1
     assert app.root.after.call_count == 6
-    assert all(call.args == (30, app.poll) for call in app.root.after.call_args_list)
+    assert all(1 <= call.args[0] <= 17 for call in app.root.after.call_args_list)
+    assert all(call.args[1] == app.poll for call in app.root.after.call_args_list)
+
+
+@pytest.mark.parametrize("fps", [30, 60])
+@pytest.mark.parametrize("render_ms", [3, 11])
+def test_preview_cadence_includes_render_time_without_drift(preview_poll, fps, render_ms):
+    app, frame, now, _, photo = preview_poll
+    app.preview_fps.set(str(fps))
+    started = now[0]
+
+    def render(image):
+        now[0] += render_ms / 1000
+        return object()
+
+    photo.side_effect = render
+    for _ in range(180):
+        if not app.session.previews.empty():
+            app.session.previews.get_nowait()
+        app.session.previews.put((now[0], frame))
+        app.session.metrics.capture(now[0], frame.shape)
+        app.poll()
+        delay, callback = app.root.after.call_args.args
+        assert 1 <= delay <= 34 and callback == app.poll
+        now[0] += delay / 1000
+    assert now[0] - started == pytest.approx(180 / fps, abs=0.0011)
+    assert photo.call_count == app.session.metrics.snapshot()["counts"]["display"] == 180
+    assert app.root.after.call_count == 180
+
+
+def test_preview_overrun_keeps_one_timer_and_resumes_without_a_catchup_burst(preview_poll):
+    app, _, now, _, photo = preview_poll
+
+    def slow_render(image):
+        now[0] += 0.1
+        return object()
+
+    photo.side_effect = slow_render
+    app.poll()
+    assert app.root.after.call_args.args == (1, app.poll)
+    now[0] += 0.001
+    app.poll()  # Cached pixels cost no render time; cadence resumes at the next slot.
+    assert app.root.after.call_count == 2
+    assert 15 <= app.root.after.call_args.args[0] <= 17
 
 
 @pytest.mark.parametrize("change", ["frame", "box", "region", "size", "loss", "clear", "expired"])
@@ -2444,6 +2573,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         paused=threading.Event(),
         video_timestamp=0,
         video_displayed=0,
+        display_ack=threading.Event(),
         alive=lambda: False,
         finish=metrics.finish,
     )
@@ -2471,6 +2601,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     )
     app.poll()
     assert session.video_displayed == captured and app.frame is frame
+    assert session.display_ack.is_set()
     assert frame.copy.call_count == 1
     assert app.actual_resolution.get() == "100×100"
     assert app.processing_time.get() == "1000ms"
@@ -2591,7 +2722,12 @@ def test_advanced_settings_toggle_and_summary_follow_values(camera_controls):
     app.device.set("cuda")
     app.resolution.set("1280×720")
     app.update_advanced_summary()
-    assert app.advanced_summary.get() == "임계값 0.31 · 장치 CUDA\n요청 해상도 1280×720"
+    assert (
+        app.advanced_summary.get() == "임계값 0.31 · 장치 CUDA\n요청 해상도 1280×720 · 화면 60fps"
+    )
+    app.preview_fps.set("30")
+    app.update_advanced_summary()
+    assert app.advanced_summary.get().endswith("화면 30fps")
 
 
 def test_sidebar_switches_panels_without_stopping_active_session(camera_controls):

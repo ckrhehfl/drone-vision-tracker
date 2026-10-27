@@ -512,6 +512,7 @@ class CameraSession:
         self.video_path = Path(video_path) if video_path is not None else None
         self.paused = threading.Event()
         self.video_displayed = 0.0
+        self.display_ack = threading.Event()
         self.video_timestamp = 0.0
         self.video_progress = (0.0, 0)
         self.threshold, self.device = threshold, device
@@ -572,6 +573,8 @@ class CameraSession:
                     )
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+            self.metrics.settings["requested_fps"] = 60
+            capture.set(cv2.CAP_PROP_FPS, 60)
             while not self.stop.is_set():
                 ok, frame = capture.read()
                 if not ok:
@@ -662,8 +665,9 @@ class CameraSession:
                 self.metrics.capture(dispatched, frame.shape, video_time_s=timestamp)
                 self.frames.put_nowait((dispatched, frame))
                 # GUI acknowledges this exact frame only after its result has been displayed.
-                while self.video_displayed < dispatched and not self.stop.wait(0.02):
-                    pass
+                while self.video_displayed < dispatched and not self.stop.is_set():
+                    self.display_ack.wait(0.02)
+                    self.display_ack.clear()
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(f"영상 테스트 오류: {exc}")
@@ -1086,6 +1090,7 @@ class CameraGUI:
         self.threshold = tk.StringVar(value="0.25" if default_model else "0.65")
         self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
         self.resolution = tk.StringVar(value="1920×1080")
+        self.preview_fps = tk.StringVar(value="60")
         self.video_name = tk.StringVar(value="테스트할 동영상을 선택하세요")
         self.capture_info = tk.StringVar(value="입력을 시작하면 실제 해상도를 확인할 수 있습니다.")
         self.performance = tk.StringVar(value="수신 · 화면 · 추적 FPS와 지연은 시작 후 표시됩니다.")
@@ -1097,7 +1102,7 @@ class CameraGUI:
         self.processing_time = tk.StringVar(value="—")
         self.observed = tk.StringVar(value="—  미관측")
         self.advanced_summary = tk.StringVar()
-        for variable in (self.threshold, self.device, self.resolution):
+        for variable in (self.threshold, self.device, self.resolution, self.preview_fps):
             variable.trace_add("write", self.update_advanced_summary)
         self.update_advanced_summary()
 
@@ -1396,6 +1401,7 @@ class CameraGUI:
                 ("품질 임계값", self.threshold, None),
                 ("처리 장치", self.device, ("cuda", "mps", "cpu")),
                 ("요청 해상도", self.resolution, ("1920×1080", "1280×720", "640×480")),
+                ("화면 목표 FPS", self.preview_fps, ("30", "60")),
             )
         ):
             ttk.Label(self.advanced_fields, text=label).grid(
@@ -1565,7 +1571,8 @@ class CameraGUI:
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.update_segments()
         self.refresh_cameras()
-        root.after(30, self.poll)
+        self.next_poll = time.monotonic()
+        root.after(0, self.poll)
 
     def show_page(self):
         learning = self.page.get() == "learning"
@@ -1583,7 +1590,7 @@ class CameraGUI:
     def update_advanced_summary(self, *_args):
         self.advanced_summary.set(
             f"임계값 {self.threshold.get()} · 장치 {self.device.get().upper()}\n"
-            f"요청 해상도 {self.resolution.get()}"
+            f"요청 해상도 {self.resolution.get()} · 화면 {self.preview_fps.get()}fps"
         )
 
     def toggle_advanced(self):
@@ -1753,6 +1760,8 @@ class CameraGUI:
             if self.resolution.get() not in ("1920×1080", "1280×720", "640×480"):
                 raise ValueError("지원하는 입력 해상도를 선택하세요.")
             resolution = tuple(int(value) for value in self.resolution.get().split("×"))
+            if self.preview_fps.get() not in ("30", "60"):
+                raise ValueError("화면 목표 FPS는 30 또는 60을 선택하세요.")
             model = None
             if video_path is not None or self.mode.get() == "YOLO 자동 검출":
                 path = Path(self.model.get()).expanduser()
@@ -1775,6 +1784,7 @@ class CameraGUI:
                     None, model, threshold, self.device.get(), resolution, video_path=video_path
                 )
             self.metrics = self.session.metrics
+            self.metrics.settings["preview_target_fps"] = int(self.preview_fps.get())
             self.save_metrics_button.configure(state="disabled")
             self.evaluate_button.configure(state="disabled")
             self.collect_button.configure(state="normal" if video_path is None else "disabled")
@@ -2196,6 +2206,7 @@ class CameraGUI:
                         )
                         if observation is not None:
                             session.video_displayed = captured
+                            session.display_ack.set()
                     else:
                         self.status.set(f"{info}{processing} · 영상 {age * 1000:.0f}ms")
                 elif age > MAX_AGE_S:
@@ -2215,7 +2226,11 @@ class CameraGUI:
                     + f" / 저장 큐 누락 {collector.dropped}"
                     + (f" · 저장 오류: {collector.error}" if collector.error else "")
                 )
-        self.root.after(30, self.poll)
+        now = time.monotonic()
+        fps = 30 if self.preview_fps.get() == "30" else 60
+        # Keep the cadence across render time; do not queue missed refreshes.
+        self.next_poll = max(self.next_poll + 1 / fps, now)
+        self.root.after(max(1, math.ceil((self.next_poll - now) * 1000)), self.poll)
 
     def edit_labels(self):
         from tools.label_editor import LabelEditor
