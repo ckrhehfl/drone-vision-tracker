@@ -1,4 +1,4 @@
-"""Local camera tracking; saves stills only on opt-in and never opens Serial."""
+"""Local camera tracking; camera capture and manual pan each require an explicit operator action."""
 
 import hashlib
 import json
@@ -1081,6 +1081,7 @@ class CameraGUI:
         self.cameras = {}
         self.settings_widgets = []
         self.mode_buttons = []
+        self.pan_window = None
         default_model = installed_model()
         self.camera = tk.StringVar()
         self.source = tk.StringVar(value="camera")
@@ -1420,6 +1421,9 @@ class CameraGUI:
             )
             widget.grid(row=row, column=1, sticky="ew", pady=4)
             self.settings_widgets.append(widget)
+        ttk.Button(
+            self.tracking_panel, text="0번 모터 수동 조작", command=self.open_pan_control
+        ).grid(row=2, sticky="ew", pady=(12, 0))
         ttk.Label(
             self.tracking_panel,
             text="수동 지정은 영상에서 대상을 드래그하세요.\n"
@@ -1427,7 +1431,7 @@ class CameraGUI:
             style="Muted.TLabel",
             background="#f7f9fc",
             wraplength=310,
-        ).grid(row=2, sticky="nw", pady=12)
+        ).grid(row=3, sticky="nw", pady=12)
 
         self.learning_panel = tk.Frame(
             panel_stack,
@@ -1582,6 +1586,14 @@ class CameraGUI:
         panel = self.learning_panel if learning else self.tracking_panel
         panel.grid(row=0, column=0, sticky="new")
         self.panel_view.yview_moveto(0)
+
+    def open_pan_control(self):
+        from tools.pan_keyboard import PanControlWindow
+
+        if self.pan_window is not None and self.pan_window.window.winfo_exists():
+            self.pan_window.window.lift()
+        else:
+            self.pan_window = PanControlWindow(self.root)
 
     def scroll_controls(self, event):
         self.panel_view.yview_scroll(-1 if event.num == 4 or event.delta > 0 else 1, "units")
@@ -2255,6 +2267,8 @@ class CameraGUI:
             )
 
     def close(self):
+        if getattr(self, "pan_window", None) is not None and self.pan_window.window.winfo_exists():
+            self.pan_window.close()
         if (
             self.label_editor is not None
             and self.label_editor.window.winfo_exists()
