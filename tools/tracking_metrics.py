@@ -19,10 +19,11 @@ def percentile(values, fraction):
 
 
 class SessionMetrics:
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, *, yolo_deadline_s=None):
         self.started = time.monotonic()
         self.session_id = str(uuid.uuid4())
         self.settings = settings or {}
+        self.yolo_deadline_s = yolo_deadline_s
         self.lock = threading.Lock()
         self.events = {name: deque() for name in ("capture", "process", "display")}
         self.counts = Counter()
@@ -60,6 +61,18 @@ class SessionMetrics:
     def discard(self, reason, count=1):
         with self.lock:
             self.counts[reason] += count
+
+    def yolo_observed(self, captured, finished):
+        deadline = self.yolo_deadline_s
+        if deadline is None or not (math.isfinite(captured) and captured <= finished < math.inf):
+            return
+        with self.lock:
+            self.counts["yolo_observations"] += 1
+            if finished <= captured + deadline:
+                self.counts["yolo_observations_on_time"] += 1
+
+    def delay_hold(self):
+        self.discard("delay_hold_transitions")
 
     def processed(self, captured, started, finished, detection, method):
         with self.lock:
@@ -101,7 +114,7 @@ class SessionMetrics:
             for name, events in self.events.items()
         }
         recent = [row for row in self.timings if now - WINDOW_S < row[0] <= now]
-        return {
+        summary = {
             "duration_s": duration,
             "window_s": WINDOW_S,
             "fps": fps,
@@ -117,6 +130,21 @@ class SessionMetrics:
             "recorded_frames": len(self.frames),
             "truncated": self.counts["capture"] > len(self.frames),
         }
+        if self.yolo_deadline_s is not None:
+            total = self.counts["yolo_observations"]
+            on_time = self.counts["yolo_observations_on_time"]
+            summary["yolo_control_timing"] = {
+                "deadline_ms": self.yolo_deadline_s * 1000,
+                "observations": total,
+                "on_time_observations": on_time,
+                "on_time_pct": 100 * on_time / total if total else None,
+                "delay_hold_transitions": (
+                    None
+                    if self.settings.get("source_type") == "video_test"
+                    else self.counts["delay_hold_transitions"]
+                ),
+            }
+        return summary
 
     def snapshot(self):
         with self.lock:
@@ -149,7 +177,7 @@ def performance_text(summary):
         values = summary[key]
         return "/".join("—" if values[p] is None else f"{values[p]:.0f}" for p in ("p50", "p95"))
 
-    return (
+    text = (
         f"최근 2초 FPS · 수신 {fps['capture']:.1f} · 화면 갱신 {fps['display']:.1f}"
         f" · 추적 처리 {fps['process']:.1f}  | 누적 {counts.get('capture', 0)}"
         f"/{counts.get('display', 0)}/{counts.get('process', 0)}\n"
@@ -165,6 +193,17 @@ def performance_text(summary):
             else f" · 평가 기록 {summary['recorded_frames']}장"
         )
     )
+    if control := summary.get("yolo_control_timing"):
+        pct = control["on_time_pct"]
+        rate = "—" if pct is None else f"{pct:.1f}%"
+        delay_holds = control["delay_hold_transitions"]
+        holds = "— (영상 재생)" if delay_holds is None else f"{delay_holds}회"
+        text += (
+            f"\nYOLO 관측 {control['deadline_ms']:g}ms 이내 {rate}"
+            f" ({control['on_time_observations']}/{control['observations']})"
+            f" · 지연 HOLD {holds}"
+        )
+    return text
 
 
 def _number(value):

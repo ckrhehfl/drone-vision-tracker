@@ -40,6 +40,27 @@ def test_fps_counts_completed_work_and_unique_frames_then_expires(clock):
     assert metrics.snapshot()["duration_s"] == 4.0
 
 
+def test_yolo_control_timing_formats_zero_and_exports_the_full_session(clock):
+    metrics = SessionMetrics(yolo_deadline_s=0.1)
+    empty = metrics.snapshot()
+    assert empty["yolo_control_timing"]["on_time_pct"] is None
+    assert "100ms 이내 — (0/0) · 지연 HOLD 0회" in performance_text(empty)
+    metrics.yolo_observed(1, 1.1)
+    metrics.yolo_observed(2, 2.101)
+    metrics.delay_hold()
+    clock[0] = 10
+    metrics.finish()
+    summary = metrics.report()["performance"]
+    assert summary["yolo_control_timing"] == {
+        "deadline_ms": 100,
+        "observations": 2,
+        "on_time_observations": 1,
+        "on_time_pct": 50,
+        "delay_hold_transitions": 1,
+    }
+    assert "100ms 이내 50.0% (1/2) · 지연 HOLD 1회" in performance_text(summary)
+
+
 def test_record_limit_is_explicit_and_does_not_stop_runtime_measurement(clock, monkeypatch):
     monkeypatch.setattr("tools.tracking_metrics.MAX_RECORDS", 2)
     metrics = SessionMetrics()

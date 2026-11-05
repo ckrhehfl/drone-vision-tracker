@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from threading import Lock
 
+DEFAULT_MAX_FRAME_AGE_S = 0.1
+
 
 @dataclass(frozen=True)
 class AxisConfig:
@@ -60,13 +62,23 @@ class MockTransport:
 
 
 class PanTiltController:
-    def __init__(self, pan, tilt, *, dead_zone=0.05, max_frame_age_s=0.1, clock=None):
+    def __init__(
+        self,
+        pan,
+        tilt,
+        *,
+        dead_zone=0.05,
+        max_frame_age_s=DEFAULT_MAX_FRAME_AGE_S,
+        clock=None,
+        on_delay_hold=None,
+    ):
         if not 0 <= dead_zone < 1 or not math.isfinite(max_frame_age_s) or max_frame_age_s <= 0:
             raise ValueError("Invalid dead zone or observation age limit")
         self.pan, self.tilt = pan, tilt
         self.dead_zone, self.max_frame_age_s = dead_zone, max_frame_age_s
         self.transport = MockTransport(PanTiltCommand(pan.neutral_deg, tilt.neutral_deg))
         self._clock = clock
+        self._on_delay_hold = on_delay_hold
         self._lock = Lock()
         self._stopped = False
         self._paused = False
@@ -76,10 +88,13 @@ class PanTiltController:
         self._shape = None
 
     @classmethod
-    def simulated(cls, *, clock=None):
+    def simulated(cls, *, clock=None, on_delay_hold=None):
         # Synthetic values for P4-01. Physical axis calibration is separate.
         return cls(
-            AxisConfig(60, 90, 120, 1, 60, 30), AxisConfig(70, 90, 110, 1, 60, 30), clock=clock
+            AxisConfig(60, 90, 120, 1, 60, 30),
+            AxisConfig(70, 90, 110, 1, 60, 30),
+            clock=clock,
+            on_delay_hold=on_delay_hold,
         )
 
     def hold(self):
@@ -100,12 +115,15 @@ class PanTiltController:
                 self._resume_after = time.monotonic()
             return self._hold()
 
-    def _hold(self):
+    def _hold(self, *, delayed=False):
         self._previous_observation_at = None
         last = self.transport.latest
         if last.state == "HOLD":
             return last
-        return self.transport.send(PanTiltCommand(last.pan_deg, last.tilt_deg))
+        held = self.transport.send(PanTiltCommand(last.pan_deg, last.tilt_deg))
+        if delayed and self._on_delay_hold is not None:
+            self._on_delay_hold()
+        return held
 
     def _fresh(self, captured, now):
         return (
@@ -117,7 +135,7 @@ class PanTiltController:
     def _expire(self, now):
         previous = self._previous_observation_at
         if now is not None and previous is not None and not self._fresh(previous, now):
-            self._hold()
+            self._hold(delayed=math.isfinite(now) and now > previous + self.max_frame_age_s)
 
     def snapshot(self, now=None):
         """Service the live deadline even when the inference worker is busy."""
@@ -138,6 +156,7 @@ class PanTiltController:
             )
 
     def _update(self, captured, shape, box, now):
+        self._expire(now)
         if (
             self._stopped
             or not math.isfinite(captured)
@@ -154,7 +173,6 @@ class PanTiltController:
         if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
             return self._hold()
 
-        self._expire(now)
         previous = self._previous_observation_at
         if self._shape != shape or previous is None:
             self._hold()

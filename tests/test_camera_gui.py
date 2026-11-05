@@ -34,7 +34,7 @@ from tools.camera_gui import (
     tracker_detection,
     verify_appearance,
 )
-from tools.tracking_metrics import SessionMetrics
+from tools.tracking_metrics import SessionMetrics, performance_text
 
 
 def test_camera_names_use_avfoundation_order_and_transport_without_capture(monkeypatch):
@@ -1928,18 +1928,15 @@ def run_yolo_frames(monkeypatch):
             y, x = slices
             return Frame((y.stop - y.start, x.stop - x.start, 3), self.boxes, (x.start, y.start))
 
-    def run(rows, *, video=False, device="cpu", commands=None, while_predicting=None):
+    def run(rows, *, video=False, device="cpu", commands=None, while_predicting=None, summary=None):
         clock.now = 10.0
         records.clear()
-        session = CameraSession.__new__(CameraSession)
-        session.model_path, session.threshold, session.device = "trusted-local.pt", 0.25, device
-        session.pan_tilt = gui.PanTiltController.simulated(
-            clock=None if video else gui.time.monotonic
-        )
-        session.metrics = SessionMetrics({"source_type": "video_test" if video else "camera"})
-        session.stop = threading.Event()
-        session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
-        session.results = queue.Queue(maxsize=1)
+        # Drive the real session wiring with fake frames and no capture worker.
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", lambda self: None)
+            session = CameraSession(
+                0, "trusted-local.pt", 0.25, device, video_path="mock.mp4" if video else None
+            )
         index, delay = 0, 0.0
         predicting, resume = threading.Event(), threading.Event()
 
@@ -2011,7 +2008,10 @@ def run_yolo_frames(monkeypatch):
                 worker.join(timeout=3)
             assert not worker.is_alive()
         assert session.errors.empty(), list(session.errors.queue)
-        return list(records), session.metrics.report()["frames"]
+        report = session.metrics.report()
+        if summary is not None:
+            summary.update(report["performance"])
+        return list(records), report["frames"]
 
     monkeypatch.setattr(gui.time, "monotonic", lambda: clock.now)
     monkeypatch.setitem(
@@ -2070,39 +2070,121 @@ def test_yolo_preview_box_can_be_too_old_for_mock_control(run_yolo_frames):
     assert commands[2].pan_deg == commands[1].pan_deg
 
 
+def test_yolo_latency_summary_counts_confirmed_late_boxes_even_when_preview_discards_them(
+    run_yolo_frames,
+):
+    box = (70, 10, 90, 30, 0.9)
+    summary, commands = {}, []
+    records, _ = run_yolo_frames(
+        [
+            (0, [box]),
+            (0.05, [box]),
+            (0.10, []),
+            (0.15, [box]),
+            (0.20, [box]),
+            (0.25, [box]),
+            (0.30, [box]),
+            (0.35, [box], 0.51),
+            (0.95, []),
+        ],
+        summary=summary,
+        commands=commands,
+    )
+    assert records[7][2] is None and summary["counts"]["stale_result"] == 1
+    assert [commands[i].state for i in (1, 2, 6, 7)] == ["TRACK", "HOLD", "TRACK", "HOLD"]
+    assert summary["yolo_control_timing"] == {
+        "deadline_ms": 100,
+        "observations": 5,
+        "on_time_observations": 4,
+        "on_time_pct": 80,
+        "delay_hold_transitions": 1,
+    }
+
+
+@pytest.mark.parametrize("with_valid_box", [False, True])
+def test_yolo_latency_excludes_zero_area_candidates(run_yolo_frames, with_valid_box):
+    valid_box = (70, 10, 90, 30, 0.8)
+    boxes = [(0, 10, 0, 20, 0.9), (10, 0, 20, 0, 0.95)]
+    if with_valid_box:
+        boxes.append(valid_box)
+    summary, commands = {}, []
+    records, _ = run_yolo_frames([(0, boxes), (0.05, [])], summary=summary, commands=commands)
+    assert records[0][2] == (valid_box if with_valid_box else None)
+    assert commands[0].state == "HOLD"
+    assert summary["yolo_control_timing"] == {
+        "deadline_ms": 100,
+        "observations": int(with_valid_box),
+        "on_time_observations": int(with_valid_box),
+        "on_time_pct": 100 if with_valid_box else None,
+        "delay_hold_transitions": 0,
+    }
+
+
 def test_slow_video_uses_actual_frame_interval_for_mock_control(run_yolo_frames):
     box = (70, 10, 90, 30, 0.9)
-    commands = []
+    commands, summary = [], {}
     run_yolo_frames(
         [(0, [box], 0.25), (0.125, [box], 0.25), (0.25, [], 0.25), (0.375, [box])],
         video=True,
         commands=commands,
+        summary=summary,
     )
     assert [command.state for command in commands] == ["HOLD", "TRACK", "HOLD", "HOLD"]
     assert (commands[1].pan_deg, commands[1].tilt_deg) == pytest.approx((93.75, 86.25))
     assert (commands[2].pan_deg, commands[2].tilt_deg) == (93.75, 86.25)
+    assert summary["yolo_control_timing"] == {
+        "deadline_ms": 100,
+        "observations": 2,
+        "on_time_observations": 0,
+        "on_time_pct": 0,
+        "delay_hold_transitions": None,
+    }
+    assert "지연 HOLD — (영상 재생)" in performance_text(summary)
 
 
-def test_live_output_enters_hold_while_inference_is_blocked(run_yolo_frames):
+def test_live_output_enters_hold_while_inference_is_blocked(
+    preview_poll, run_yolo_frames, monkeypatch, tmp_path
+):
+    app, *_ = preview_poll
     box = (70, 10, 90, 30, 0.9)
-    commands = []
+    commands, summary = [], {}
 
     def display_tick(session, clock):
+        app.session = session
         controller = session.pan_tilt
         moving = controller.transport.latest
         assert moving.state == "TRACK"
         clock.now += 0.12
-        held = controller.snapshot()  # Same controller call as CameraGUI.poll.
-        assert held.state == "HOLD" and controller.transport.latest == held
+        app.poll()
+        held = controller.transport.latest
+        assert held.state == "HOLD"
+        assert "YOLO 관측 100ms 이내 100.0% (2/2) · 지연 HOLD 1회" in app.performance.get()
+        app.poll()
+        assert controller.transport.latest == held
         assert (held.pan_deg, held.tilt_deg) == (moving.pan_deg, moving.tilt_deg)
 
     records, _ = run_yolo_frames(
         [(0, [box]), (0.05, [box]), (0.10, [box]), (0.25, [box])],
         commands=commands,
         while_predicting=display_tick,
+        summary=summary,
     )
     assert records[2][2] == box
     assert commands[2].state == "HOLD" and commands[2].pan_deg == commands[1].pan_deg
+    app.poll()
+    assert "YOLO 관측 100ms 이내 66.7% (2/3) · 지연 HOLD 1회" in app.performance.get()
+    path = tmp_path / "measurement.json"
+    monkeypatch.setitem(
+        sys.modules,
+        "tkinter",
+        SimpleNamespace(
+            filedialog=SimpleNamespace(asksaveasfilename=lambda **kwargs: str(path)),
+            messagebox=SimpleNamespace(showerror=lambda *args: pytest.fail(str(args))),
+        ),
+    )
+    app.save_metrics()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["performance"]["yolo_control_timing"] == summary["yolo_control_timing"]
 
 
 @pytest.mark.parametrize("video", [False, True])
