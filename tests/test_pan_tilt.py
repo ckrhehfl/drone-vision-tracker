@@ -91,10 +91,8 @@ def test_live_expiration_holds_without_an_incoming_frame():
     observe(controller, 0)
     moved = observe(controller, 0.05)
     assert controller.snapshot(0.12) == moved
-    # The UI can read HOLD while the worker is still busy and cannot expire its output.
-    assert controller.snapshot(0.16).state == "HOLD"
-    controller.expire(0.16)
-    assert controller.transport.latest.state == "HOLD"
+    held = controller.snapshot(0.16)
+    assert held.state == "HOLD" and controller.transport.latest == held
     assert controller.transport.latest.pan_deg == moved.pan_deg
     assert observe(controller, 0.17, CENTER).state == "HOLD"
 

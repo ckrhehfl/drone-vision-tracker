@@ -691,9 +691,13 @@ class CameraSession:
             )
 
     def process(self):
-        self.pan_tilt = PanTiltController.simulated() if self.model_path else None
+        video_input = self.metrics.settings.get("source_type") == "video_test"
+        self.pan_tilt = (
+            PanTiltController.simulated(clock=None if video_input else time.monotonic)
+            if self.model_path
+            else None
+        )
         try:
-            video_input = self.metrics.settings.get("source_type") == "video_test"
             model, drone_classes = None, []
             if self.model_path:
                 import torch
@@ -731,7 +735,7 @@ class CameraSession:
                     captured, frame = self.frames.get(timeout=0.1)
                 except queue.Empty:
                     if self.pan_tilt is not None and not video_input:
-                        self.pan_tilt.expire(time.monotonic())
+                        self.pan_tilt.snapshot()
                     continue
                 started = time.monotonic()
                 tracking_time = (
@@ -1034,7 +1038,6 @@ class CameraSession:
                             tracking_time,
                             shape,
                             detection[:4] if detection is not None else None,
-                            now=tracking_time if video_input else finished,
                         )
                 self.metrics.processed(captured, started, finished, detection, method)
                 result_item = (captured, shape, detection, finished - started, region, method)
@@ -2240,7 +2243,7 @@ class CameraGUI:
             self.performance.set(performance_text(session.metrics.snapshot()))
             controller = getattr(session, "pan_tilt", None)
             if controller is not None:
-                command = controller.snapshot(None if video_input else time.monotonic())
+                command = controller.snapshot()
                 limit = " · 범위 제한" if command.saturated else ""
                 self.performance.set(
                     self.performance.get()

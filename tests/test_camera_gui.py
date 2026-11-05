@@ -1927,7 +1927,7 @@ def run_yolo_frames(monkeypatch):
             y, x = slices
             return Frame((y.stop - y.start, x.stop - x.start, 3), self.boxes, (x.start, y.start))
 
-    def run(rows, *, video=False, device="cpu", commands=None):
+    def run(rows, *, video=False, device="cpu", commands=None, while_predicting=None):
         clock.now = 10.0
         records.clear()
         session = CameraSession.__new__(CameraSession)
@@ -1937,6 +1937,7 @@ def run_yolo_frames(monkeypatch):
         session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
         session.results = queue.Queue(maxsize=1)
         index, delay = 0, 0.0
+        predicting, resume = threading.Event(), threading.Event()
 
         def get(timeout):
             nonlocal index, delay
@@ -1959,6 +1960,9 @@ def run_yolo_frames(monkeypatch):
 
         def predict(frame, **kwargs):
             assert kwargs["device"] == ("0" if device == "cuda" else device)
+            if while_predicting is not None and index == 3:
+                predicting.set()
+                assert resume.wait(3), "Timed out waiting for the mock output check"
             clock.now += delay
             x, y = frame.offset
             coords = [[b[0] - x, b[1] - y, b[2] - x, b[3] - y] for b in frame.boxes]
@@ -1990,7 +1994,18 @@ def run_yolo_frames(monkeypatch):
             return False
 
         monkeypatch.setattr(gui, "put_latest", publish)
-        session.process()
+        if while_predicting is None:
+            session.process()
+        else:
+            worker = threading.Thread(target=session.process, daemon=True)
+            worker.start()
+            try:
+                assert predicting.wait(3), "Worker did not reach the blocked inference"
+                while_predicting(session, clock)
+            finally:
+                resume.set()
+                worker.join(timeout=3)
+            assert not worker.is_alive()
         assert session.errors.empty(), list(session.errors.queue)
         return list(records), session.metrics.report()["frames"]
 
@@ -2049,6 +2064,41 @@ def test_yolo_preview_box_can_be_too_old_for_mock_control(run_yolo_frames):
     assert commands[1].state == "TRACK"
     assert commands[2].state == "HOLD"
     assert commands[2].pan_deg == commands[1].pan_deg
+
+
+def test_slow_video_uses_actual_frame_interval_for_mock_control(run_yolo_frames):
+    box = (70, 10, 90, 30, 0.9)
+    commands = []
+    run_yolo_frames(
+        [(0, [box], 0.25), (0.125, [box], 0.25), (0.25, [], 0.25), (0.375, [box])],
+        video=True,
+        commands=commands,
+    )
+    assert [command.state for command in commands] == ["HOLD", "TRACK", "HOLD", "HOLD"]
+    assert (commands[1].pan_deg, commands[1].tilt_deg) == pytest.approx((93.75, 86.25))
+    assert (commands[2].pan_deg, commands[2].tilt_deg) == (93.75, 86.25)
+
+
+def test_live_output_enters_hold_while_inference_is_blocked(run_yolo_frames):
+    box = (70, 10, 90, 30, 0.9)
+    commands = []
+
+    def display_tick(session, clock):
+        controller = session.pan_tilt
+        moving = controller.transport.latest
+        assert moving.state == "TRACK"
+        clock.now += 0.12
+        held = controller.snapshot()  # Same controller call as CameraGUI.poll.
+        assert held.state == "HOLD" and controller.transport.latest == held
+        assert (held.pan_deg, held.tilt_deg) == (moving.pan_deg, moving.tilt_deg)
+
+    records, _ = run_yolo_frames(
+        [(0, [box]), (0.05, [box]), (0.10, [box]), (0.25, [box])],
+        commands=commands,
+        while_predicting=display_tick,
+    )
+    assert records[2][2] == box
+    assert commands[2].state == "HOLD" and commands[2].pan_deg == commands[1].pan_deg
 
 
 @pytest.mark.parametrize("video", [False, True])

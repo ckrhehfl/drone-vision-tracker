@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from threading import Lock
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,6 @@ class PanTiltCommand:
     tilt_deg: float
     state: str = "HOLD"
     saturated: bool = False
-    observed_at: float | None = None
 
 
 @dataclass
@@ -59,22 +59,30 @@ class MockTransport:
 
 
 class PanTiltController:
-    def __init__(self, pan, tilt, *, dead_zone=0.05, max_frame_age_s=0.1):
+    def __init__(self, pan, tilt, *, dead_zone=0.05, max_frame_age_s=0.1, clock=None):
         if not 0 <= dead_zone < 1 or not math.isfinite(max_frame_age_s) or max_frame_age_s <= 0:
             raise ValueError("Invalid dead zone or observation age limit")
         self.pan, self.tilt = pan, tilt
         self.dead_zone, self.max_frame_age_s = dead_zone, max_frame_age_s
         self.transport = MockTransport(PanTiltCommand(pan.neutral_deg, tilt.neutral_deg))
+        self._clock = clock
+        self._lock = Lock()
         self._last_frame_at = None
         self._previous_observation_at = None
         self._shape = None
 
     @classmethod
-    def simulated(cls):
+    def simulated(cls, *, clock=None):
         # Synthetic values for P4-01. Physical axis calibration is separate.
-        return cls(AxisConfig(60, 90, 120, 1, 60, 30), AxisConfig(70, 90, 110, 1, 60, 30))
+        return cls(
+            AxisConfig(60, 90, 120, 1, 60, 30), AxisConfig(70, 90, 110, 1, 60, 30), clock=clock
+        )
 
     def hold(self):
+        with self._lock:
+            return self._hold()
+
+    def _hold(self):
         self._previous_observation_at = None
         last = self.transport.latest
         if last.state == "HOLD":
@@ -88,41 +96,44 @@ class PanTiltController:
             and captured <= now <= captured + self.max_frame_age_s
         )
 
-    def expire(self, now):
+    def _expire(self, now):
         previous = self._previous_observation_at
-        if previous is not None and not self._fresh(previous, now):
-            self.hold()
+        if now is not None and previous is not None and not self._fresh(previous, now):
+            self._hold()
 
     def snapshot(self, now=None):
-        """Read one output, masking an expired live observation during inference."""
-        command = self.transport.latest
-        if (
-            now is not None
-            and command.observed_at is not None
-            and not self._fresh(command.observed_at, now)
-        ):
-            return PanTiltCommand(command.pan_deg, command.tilt_deg)
-        return command
+        """Service the live deadline even when the inference worker is busy."""
+        with self._lock:
+            self._expire(self._clock() if self._clock is not None else now)
+            return self.transport.latest
 
-    def update(self, captured, shape, box, *, now):
-        """Consume one YOLO result in a single clock domain. Missing boxes mean HOLD."""
-        if not self._fresh(captured, now) or (
-            self._last_frame_at is not None and captured <= self._last_frame_at
+    def update(self, captured, shape, box, *, now=None):
+        """Consume one result. Without a live clock, use the ordered video timeline."""
+        with self._lock:
+            return self._update(
+                captured, shape, box, self._clock() if self._clock is not None else now
+            )
+
+    def _update(self, captured, shape, box, now):
+        if (
+            not math.isfinite(captured)
+            or (now is not None and not self._fresh(captured, now))
+            or (self._last_frame_at is not None and captured <= self._last_frame_at)
         ):
-            return self.hold()
+            return self._hold()
         self._last_frame_at = captured
         if box is None:
-            return self.hold()
+            return self._hold()
 
         height, width = shape
         x1, y1, x2, y2 = box
         if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
-            return self.hold()
+            return self._hold()
 
-        self.expire(now)
+        self._expire(now)
         previous = self._previous_observation_at
         if self._shape != shape or previous is None:
-            self.hold()
+            self._hold()
             self._shape = shape
             self._previous_observation_at = captured
             return self.transport.latest
@@ -135,6 +146,4 @@ class PanTiltController:
         tilt, tilt_limited = self.tilt.step(
             last.tilt_deg, ey if abs(ey) > self.dead_zone else 0, dt
         )
-        return self.transport.send(
-            PanTiltCommand(pan, tilt, "TRACK", pan_limited or tilt_limited, captured)
-        )
+        return self.transport.send(PanTiltCommand(pan, tilt, "TRACK", pan_limited or tilt_limited))
