@@ -1927,7 +1927,7 @@ def run_yolo_frames(monkeypatch):
             y, x = slices
             return Frame((y.stop - y.start, x.stop - x.start, 3), self.boxes, (x.start, y.start))
 
-    def run(rows, *, video=False, device="cpu"):
+    def run(rows, *, video=False, device="cpu", commands=None):
         clock.now = 10.0
         records.clear()
         session = CameraSession.__new__(CameraSession)
@@ -1982,12 +1982,19 @@ def run_yolo_frames(monkeypatch):
             ),
         )
         session.frames = SimpleNamespace(get=get)
+
+        def publish(channel, item):
+            records.append(item)
+            if commands is not None:
+                commands.append(session.pan_tilt.transport.latest)
+            return False
+
+        monkeypatch.setattr(gui, "put_latest", publish)
         session.process()
         assert session.errors.empty(), list(session.errors.queue)
         return list(records), session.metrics.report()["frames"]
 
     monkeypatch.setattr(gui.time, "monotonic", lambda: clock.now)
-    monkeypatch.setattr(gui, "put_latest", lambda channel, item: records.append(item) or False)
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -1997,6 +2004,51 @@ def run_yolo_frames(monkeypatch):
         ),
     )
     return run
+
+
+@pytest.mark.parametrize("video", [False, True])
+def test_yolo_worker_sends_mock_goals_and_holds_on_loss(run_yolo_frames, video):
+    box = (70, 10, 90, 30, 0.9)
+    rows = [
+        (0.0, [box]),
+        (0.05, [box]),
+        (0.10, []),
+        (0.15, [box]),
+        (0.20, [box]),
+        (0.25, [box]),
+        (0.30, [box]),
+        (0.35, [box]),
+    ]
+    commands = []
+    if video:
+        rows = [(at, boxes, 0.25) for at, boxes in rows]
+    run_yolo_frames(rows, video=video, commands=commands)
+    assert [command.state for command in commands] == [
+        "HOLD",
+        "TRACK",
+        "HOLD",
+        "HOLD",
+        "HOLD",
+        "HOLD",
+        "TRACK",
+        "HOLD",
+    ]
+    assert (commands[1].pan_deg, commands[1].tilt_deg) == pytest.approx((91.5, 88.5))
+    assert all(command.pan_deg == commands[1].pan_deg for command in commands[2:6])
+    assert commands[6].pan_deg == pytest.approx(93.0)
+
+
+def test_yolo_preview_box_can_be_too_old_for_mock_control(run_yolo_frames):
+    box = (70, 10, 90, 30, 0.9)
+    commands = []
+    records, _ = run_yolo_frames(
+        [(0.0, [box]), (0.05, [box]), (0.10, [box], 0.11), (0.25, [box])],
+        commands=commands,
+    )
+    assert records[2][2] == box  # Still fresh for the preview's 500 ms window.
+    assert commands[1].state == "TRACK"
+    assert commands[2].state == "HOLD"
+    assert commands[2].pan_deg == commands[1].pan_deg
 
 
 @pytest.mark.parametrize("video", [False, True])

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from tools.frame_collection import FrameCollector
+from tools.pan_tilt import PanTiltController
 from tools.pretrained_drone import installed_model
 from tools.tracking_metrics import (
     SessionMetrics,
@@ -527,6 +528,7 @@ class CameraSession:
             }
         )
         self.manual_engine = "대기"
+        self.pan_tilt = None
         self.collector = None
         self.collection_lock = threading.Lock()
         self.stop = threading.Event()
@@ -689,6 +691,7 @@ class CameraSession:
             )
 
     def process(self):
+        self.pan_tilt = PanTiltController.simulated() if self.model_path else None
         try:
             video_input = self.metrics.settings.get("source_type") == "video_test"
             model, drone_classes = None, []
@@ -727,6 +730,8 @@ class CameraSession:
                 try:
                     captured, frame = self.frames.get(timeout=0.1)
                 except queue.Empty:
+                    if self.pan_tilt is not None and not video_input:
+                        self.pan_tilt.expire(time.monotonic())
                     continue
                 started = time.monotonic()
                 tracking_time = (
@@ -738,6 +743,8 @@ class CameraSession:
                 )
                 if not video_input and started - captured > MAX_AGE_S:
                     yolo.lose()
+                    if self.pan_tilt is not None:
+                        self.pan_tilt.hold()
                     self.metrics.discard("stale_input")
                     continue
                 shape = frame.shape[:2]
@@ -1019,6 +1026,16 @@ class CameraSession:
                             pending = None
                             if template is not None:
                                 method = "재검색"
+                if self.pan_tilt is not None:
+                    if self.stop.is_set():
+                        self.pan_tilt.hold()
+                    else:
+                        self.pan_tilt.update(
+                            tracking_time,
+                            shape,
+                            detection[:4] if detection is not None else None,
+                            now=tracking_time if video_input else finished,
+                        )
                 self.metrics.processed(captured, started, finished, detection, method)
                 result_item = (captured, shape, detection, finished - started, region, method)
                 self.metrics.discard(
@@ -1036,6 +1053,9 @@ class CameraSession:
             self.metrics.fail(exc)
             self.errors.put(f"추적 오류: {exc}")
             self.stop.set()
+        finally:
+            if self.pan_tilt is not None:
+                self.pan_tilt.hold()
 
     def alive(self):
         return any(thread.is_alive() for thread in self.threads)
@@ -2218,6 +2238,15 @@ class CameraGUI:
                     self.draw_empty_preview()
                     self.status.set("새 영상 대기 · 대상 관측 무효")
             self.performance.set(performance_text(session.metrics.snapshot()))
+            controller = getattr(session, "pan_tilt", None)
+            if controller is not None:
+                command = controller.snapshot(None if video_input else time.monotonic())
+                limit = " · 범위 제한" if command.saturated else ""
+                self.performance.set(
+                    self.performance.get()
+                    + f" · 모의 {command.state}: 팬 {command.pan_deg:.1f}° / "
+                    f"틸트 {command.tilt_deg:.1f}°{limit}"
+                )
             if session.collector is not None:
                 collector = session.collector
                 self.performance.set(
