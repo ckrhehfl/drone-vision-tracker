@@ -990,12 +990,17 @@ class CameraSession:
                         verbose=False,
                     )[0]
                     boxes = result.boxes
-                    detections = [
-                        restore_detection((*coords, float(confidence)), region, crop.shape[:2])
-                        for coords, confidence in zip(
-                            boxes.xyxy.cpu().tolist(), boxes.conf.cpu().tolist(), strict=True
+                    detections = []
+                    height, width = shape
+                    for coords, confidence in zip(
+                        boxes.xyxy.cpu().tolist(), boxes.conf.cpu().tolist(), strict=True
+                    ):
+                        box = restore_detection(
+                            (*coords, float(confidence)), region, crop.shape[:2]
                         )
-                    ]
+                        left, top, right, bottom, _ = box
+                        if 0 <= left < right <= width and 0 <= top < bottom <= height:
+                            detections.append(box)
                     # ponytail: IoU needs overlapping boxes; add an ID tracker for fast motion.
                     detection, method = yolo.observe(
                         choose_target(detections, yolo_candidate or previous), tracking_time
