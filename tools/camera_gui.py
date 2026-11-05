@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from tools.frame_collection import FrameCollector
+from tools.pan_tilt import PanTiltController
 from tools.pretrained_drone import installed_model
 from tools.tracking_metrics import (
     SessionMetrics,
@@ -503,6 +504,8 @@ def observation_for_preview(result, captured, shape, now):
 
 
 class CameraSession:
+    pan_tilt: PanTiltController | None = None
+
     def __init__(
         self, camera, model_path, threshold, device, resolution=(1920, 1080), *, video_path=None
     ):
@@ -527,6 +530,11 @@ class CameraSession:
             }
         )
         self.manual_engine = "대기"
+        self.pan_tilt = (
+            PanTiltController.simulated(clock=time.monotonic if video_path is None else None)
+            if model_path
+            else None
+        )
         self.collector = None
         self.collection_lock = threading.Lock()
         self.stop = threading.Event()
@@ -541,6 +549,11 @@ class CameraSession:
         ]
         for thread in self.threads:
             thread.start()
+
+    def request_stop(self):
+        if self.pan_tilt is not None:
+            self.pan_tilt.stop()
+        self.stop.set()
 
     def capture(self):
         if self.metrics.settings.get("source_type") == "video_test":
@@ -591,7 +604,7 @@ class CameraSession:
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(str(exc))
-            self.stop.set()
+            self.request_stop()
         finally:
             if capture is not None:
                 capture.release()
@@ -639,7 +652,7 @@ class CameraSession:
                     if sha256(self.video_path) != digest:
                         raise ValueError("테스트 중 원본 동영상이 변경됐습니다.")
                     settings["video_complete"] = True
-                    self.stop.set()
+                    self.request_stop()
                     break
                 timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
                 if (
@@ -671,7 +684,7 @@ class CameraSession:
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(f"영상 테스트 오류: {exc}")
-            self.stop.set()
+            self.request_stop()
         finally:
             if capture is not None:
                 capture.release()
@@ -689,8 +702,8 @@ class CameraSession:
             )
 
     def process(self):
+        video_input = self.metrics.settings.get("source_type") == "video_test"
         try:
-            video_input = self.metrics.settings.get("source_type") == "video_test"
             model, drone_classes = None, []
             if self.model_path:
                 import torch
@@ -727,6 +740,8 @@ class CameraSession:
                 try:
                     captured, frame = self.frames.get(timeout=0.1)
                 except queue.Empty:
+                    if self.pan_tilt is not None and not video_input:
+                        self.pan_tilt.snapshot()
                     continue
                 started = time.monotonic()
                 tracking_time = (
@@ -738,6 +753,8 @@ class CameraSession:
                 )
                 if not video_input and started - captured > MAX_AGE_S:
                     yolo.lose()
+                    if self.pan_tilt is not None:
+                        self.pan_tilt.hold()
                     self.metrics.discard("stale_input")
                     continue
                 shape = frame.shape[:2]
@@ -1019,6 +1036,16 @@ class CameraSession:
                             pending = None
                             if template is not None:
                                 method = "재검색"
+                if self.pan_tilt is not None:
+                    if self.stop.is_set():
+                        self.pan_tilt.stop()
+                    else:
+                        self.pan_tilt.update(
+                            tracking_time,
+                            shape,
+                            detection[:4] if detection is not None else None,
+                            received_at=captured,
+                        )
                 self.metrics.processed(captured, started, finished, detection, method)
                 result_item = (captured, shape, detection, finished - started, region, method)
                 self.metrics.discard(
@@ -1035,7 +1062,10 @@ class CameraSession:
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(f"추적 오류: {exc}")
-            self.stop.set()
+            self.request_stop()
+        finally:
+            if self.pan_tilt is not None:
+                self.pan_tilt.stop()
 
     def alive(self):
         return any(thread.is_alive() for thread in self.threads)
@@ -1811,7 +1841,7 @@ class CameraGUI:
 
     def stop(self):
         if self.session is not None:
-            self.session.stop.set()
+            self.session.request_stop()
             self.status.set("정지 중 · 입력 해제 대기…")
             self.run_state.set("●  정지 중")
         self.stop_button.configure(state="disabled")
@@ -1866,12 +1896,16 @@ class CameraGUI:
             or session.metrics.settings.get("source_type") != "video_test"
         ):
             return
-        if session.paused.is_set():
-            session.paused.clear()
-        else:
+        paused = not session.paused.is_set()
+        controller = getattr(session, "pan_tilt", None)
+        if controller is not None:
+            controller.set_paused(paused)
+        if paused:
             session.paused.set()
-        self.pause_button.configure(text="재생" if session.paused.is_set() else "일시정지")
-        self.run_state.set("●  일시정지" if session.paused.is_set() else "●  실행 중")
+        else:
+            session.paused.clear()
+        self.pause_button.configure(text="재생" if paused else "일시정지")
+        self.run_state.set("●  일시정지" if paused else "●  실행 중")
 
     def import_video(self):
         from tkinter import filedialog
@@ -2218,6 +2252,15 @@ class CameraGUI:
                     self.draw_empty_preview()
                     self.status.set("새 영상 대기 · 대상 관측 무효")
             self.performance.set(performance_text(session.metrics.snapshot()))
+            controller = getattr(session, "pan_tilt", None)
+            if controller is not None:
+                command = controller.snapshot()
+                limit = " · 범위 제한" if command.saturated else ""
+                self.performance.set(
+                    self.performance.get()
+                    + f" · 모의 {command.state}: 팬 {command.pan_deg:.1f}° / "
+                    f"틸트 {command.tilt_deg:.1f}°{limit}"
+                )
             if session.collector is not None:
                 collector = session.collector
                 self.performance.set(
