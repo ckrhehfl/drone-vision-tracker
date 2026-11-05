@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from tools.frame_collection import FrameCollector
-from tools.pan_tilt import PanTiltController
+from tools.pan_tilt import DEFAULT_MAX_FRAME_AGE_S, PanTiltController
 from tools.pretrained_drone import installed_model
 from tools.tracking_metrics import (
     SessionMetrics,
@@ -520,6 +520,7 @@ class CameraSession:
         self.video_progress = (0.0, 0)
         self.threshold, self.device = threshold, device
         self.resolution = resolution
+        live_yolo = model_path is not None and video_path is None
         self.metrics = SessionMetrics(
             {
                 "device": device,
@@ -527,11 +528,15 @@ class CameraSession:
                 "threshold": threshold,
                 "requested_resolution": list(resolution),
                 "source_type": "video_test" if video_path is not None else "camera",
-            }
+            },
+            yolo_deadline_s=DEFAULT_MAX_FRAME_AGE_S if model_path is not None else None,
         )
         self.manual_engine = "대기"
         self.pan_tilt = (
-            PanTiltController.simulated(clock=time.monotonic if video_path is None else None)
+            PanTiltController.simulated(
+                clock=time.monotonic if live_yolo else None,
+                on_delay_hold=self.metrics.delay_hold if live_yolo else None,
+            )
             if model_path
             else None
         )
@@ -754,6 +759,7 @@ class CameraSession:
                 if not video_input and started - captured > MAX_AGE_S:
                     yolo.lose()
                     if self.pan_tilt is not None:
+                        self.pan_tilt.snapshot()
                         self.pan_tilt.hold()
                     self.metrics.discard("stale_input")
                     continue
@@ -1009,6 +1015,8 @@ class CameraSession:
                     tracker.init(frame, (x1, y1, x2 - x1, y2 - y1))
                     tracker_ready = True
                 finished = time.monotonic()
+                if model is not None and detection is not None and not self.stop.is_set():
+                    self.metrics.yolo_observed(captured, finished)
                 if not video_input and finished - captured > MAX_AGE_S:
                     self.metrics.discard("stale_result")
                     detection = None
@@ -2251,10 +2259,10 @@ class CameraGUI:
                     self.processing_time.set("—")
                     self.draw_empty_preview()
                     self.status.set("새 영상 대기 · 대상 관측 무효")
-            self.performance.set(performance_text(session.metrics.snapshot()))
             controller = getattr(session, "pan_tilt", None)
-            if controller is not None:
-                command = controller.snapshot()
+            command = controller.snapshot() if controller is not None else None
+            self.performance.set(performance_text(session.metrics.snapshot()))
+            if command is not None:
                 limit = " · 범위 제한" if command.saturated else ""
                 self.performance.set(
                     self.performance.get()
