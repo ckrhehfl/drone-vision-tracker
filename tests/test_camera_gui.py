@@ -2130,6 +2130,46 @@ def test_gui_stop_holds_before_blocked_inference_returns(run_yolo_frames, camera
     assert commands[2].pan_deg == commands[1].pan_deg
 
 
+@pytest.mark.parametrize("resume_before_return", [False, True])
+def test_video_pause_holds_and_resume_discards_in_flight_observation(
+    run_yolo_frames, camera_controls, resume_before_return
+):
+    box = (70, 10, 90, 30, 0.9)
+    commands = []
+
+    def pause_while_predicting(session, clock):
+        session.paused = threading.Event()
+        camera_controls.session = session
+        controller = session.pan_tilt
+        moving = controller.transport.latest
+        assert moving.state == "TRACK"
+        camera_controls.pause_video()
+        held = controller.transport.latest
+        assert session.paused.is_set() and held.state == "HOLD"
+        assert (held.pan_deg, held.tilt_deg) == (moving.pan_deg, moving.tilt_deg)
+        if resume_before_return:
+            clock.now += 0.005
+            camera_controls.pause_video()
+            assert not session.paused.is_set() and controller.transport.latest == held
+
+    records, _ = run_yolo_frames(
+        [(index * 0.125, [box], 0.02) for index in range(6)],
+        video=True,
+        commands=commands,
+        while_predicting=pause_while_predicting,
+    )
+    assert records[2][2] == box  # The late result still belongs to display and evaluation.
+    moved = commands[1]
+    for held in commands[2:4]:
+        assert held.state == "HOLD"
+        assert (held.pan_deg, held.tilt_deg) == (moved.pan_deg, moved.tilt_deg)
+    if resume_before_return:
+        assert commands[4].state == "TRACK"
+        assert (commands[4].pan_deg, commands[4].tilt_deg) == pytest.approx((97.5, 82.5))
+    else:
+        assert commands[4:] == [commands[2], commands[2]]
+
+
 @pytest.mark.parametrize("video", [False, True])
 @pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
 def test_yolo_loss_clears_observation_until_three_confirmed_frames(run_yolo_frames, video, device):

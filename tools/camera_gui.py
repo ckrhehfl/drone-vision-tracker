@@ -1044,6 +1044,7 @@ class CameraSession:
                             tracking_time,
                             shape,
                             detection[:4] if detection is not None else None,
+                            received_at=captured,
                         )
                 self.metrics.processed(captured, started, finished, detection, method)
                 result_item = (captured, shape, detection, finished - started, region, method)
@@ -1895,12 +1896,16 @@ class CameraGUI:
             or session.metrics.settings.get("source_type") != "video_test"
         ):
             return
-        if session.paused.is_set():
-            session.paused.clear()
-        else:
+        paused = not session.paused.is_set()
+        controller = getattr(session, "pan_tilt", None)
+        if controller is not None:
+            controller.set_paused(paused)
+        if paused:
             session.paused.set()
-        self.pause_button.configure(text="재생" if session.paused.is_set() else "일시정지")
-        self.run_state.set("●  일시정지" if session.paused.is_set() else "●  실행 중")
+        else:
+            session.paused.clear()
+        self.pause_button.configure(text="재생" if paused else "일시정지")
+        self.run_state.set("●  일시정지" if paused else "●  실행 중")
 
     def import_video(self):
         from tkinter import filedialog

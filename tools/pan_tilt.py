@@ -1,6 +1,7 @@
 """P4-01 host-side pan/tilt control with an in-memory output."""
 
 import math
+import time
 from dataclasses import dataclass
 from threading import Lock
 
@@ -68,6 +69,8 @@ class PanTiltController:
         self._clock = clock
         self._lock = Lock()
         self._stopped = False
+        self._paused = False
+        self._resume_after = None
         self._last_frame_at = None
         self._previous_observation_at = None
         self._shape = None
@@ -87,6 +90,14 @@ class PanTiltController:
         """Latch HOLD for the rest of this session, including in-flight results."""
         with self._lock:
             self._stopped = True
+            return self._hold()
+
+    def set_paused(self, paused):
+        """Hold across playback changes and set a host-time barrier on resume."""
+        with self._lock:
+            self._paused = paused
+            if not paused:
+                self._resume_after = time.monotonic()
             return self._hold()
 
     def _hold(self):
@@ -114,9 +125,14 @@ class PanTiltController:
             self._expire(self._clock() if self._clock is not None else now)
             return self.transport.latest
 
-    def update(self, captured, shape, box, *, now=None):
-        """Consume one result. Without a live clock, use the ordered video timeline."""
+    def update(self, captured, shape, box, *, now=None, received_at=None):
+        """Use the observation timeline for motion and host dispatch time for resume."""
         with self._lock:
+            if self._paused or (
+                self._resume_after is not None
+                and (received_at is None or not self._resume_after < received_at < math.inf)
+            ):
+                return self._hold()
             return self._update(
                 captured, shape, box, self._clock() if self._clock is not None else now
             )
