@@ -105,3 +105,13 @@ def test_fresh_result_after_expiration_does_not_integrate_across_gap():
     held = observe(controller, 0.10, now=0.17)
     assert held.state == "HOLD" and held.pan_deg == moved.pan_deg
     assert observe(controller, 0.18).pan_deg == pytest.approx(moved.pan_deg + 2.4)
+
+
+def test_stopped_controller_rejects_late_and_subsequent_fresh_results():
+    controller = PanTiltController.simulated()
+    observe(controller, 0)
+    moving = observe(controller, 0.05)
+    held = controller.stop()
+    assert held.state == "HOLD" and held.pan_deg == moving.pan_deg
+    assert observe(controller, 0.10) == held
+    assert observe(controller, 0.15) == held

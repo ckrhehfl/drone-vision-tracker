@@ -67,6 +67,7 @@ class PanTiltController:
         self.transport = MockTransport(PanTiltCommand(pan.neutral_deg, tilt.neutral_deg))
         self._clock = clock
         self._lock = Lock()
+        self._stopped = False
         self._last_frame_at = None
         self._previous_observation_at = None
         self._shape = None
@@ -80,6 +81,12 @@ class PanTiltController:
 
     def hold(self):
         with self._lock:
+            return self._hold()
+
+    def stop(self):
+        """Latch HOLD for the rest of this session, including in-flight results."""
+        with self._lock:
+            self._stopped = True
             return self._hold()
 
     def _hold(self):
@@ -116,7 +123,8 @@ class PanTiltController:
 
     def _update(self, captured, shape, box, now):
         if (
-            not math.isfinite(captured)
+            self._stopped
+            or not math.isfinite(captured)
             or (now is not None and not self._fresh(captured, now))
             or (self._last_frame_at is not None and captured <= self._last_frame_at)
         ):

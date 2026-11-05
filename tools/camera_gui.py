@@ -504,6 +504,8 @@ def observation_for_preview(result, captured, shape, now):
 
 
 class CameraSession:
+    pan_tilt: PanTiltController | None = None
+
     def __init__(
         self, camera, model_path, threshold, device, resolution=(1920, 1080), *, video_path=None
     ):
@@ -528,7 +530,11 @@ class CameraSession:
             }
         )
         self.manual_engine = "대기"
-        self.pan_tilt = None
+        self.pan_tilt = (
+            PanTiltController.simulated(clock=time.monotonic if video_path is None else None)
+            if model_path
+            else None
+        )
         self.collector = None
         self.collection_lock = threading.Lock()
         self.stop = threading.Event()
@@ -543,6 +549,11 @@ class CameraSession:
         ]
         for thread in self.threads:
             thread.start()
+
+    def request_stop(self):
+        if self.pan_tilt is not None:
+            self.pan_tilt.stop()
+        self.stop.set()
 
     def capture(self):
         if self.metrics.settings.get("source_type") == "video_test":
@@ -593,7 +604,7 @@ class CameraSession:
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(str(exc))
-            self.stop.set()
+            self.request_stop()
         finally:
             if capture is not None:
                 capture.release()
@@ -641,7 +652,7 @@ class CameraSession:
                     if sha256(self.video_path) != digest:
                         raise ValueError("테스트 중 원본 동영상이 변경됐습니다.")
                     settings["video_complete"] = True
-                    self.stop.set()
+                    self.request_stop()
                     break
                 timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
                 if (
@@ -673,7 +684,7 @@ class CameraSession:
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(f"영상 테스트 오류: {exc}")
-            self.stop.set()
+            self.request_stop()
         finally:
             if capture is not None:
                 capture.release()
@@ -692,11 +703,6 @@ class CameraSession:
 
     def process(self):
         video_input = self.metrics.settings.get("source_type") == "video_test"
-        self.pan_tilt = (
-            PanTiltController.simulated(clock=None if video_input else time.monotonic)
-            if self.model_path
-            else None
-        )
         try:
             model, drone_classes = None, []
             if self.model_path:
@@ -1032,7 +1038,7 @@ class CameraSession:
                                 method = "재검색"
                 if self.pan_tilt is not None:
                     if self.stop.is_set():
-                        self.pan_tilt.hold()
+                        self.pan_tilt.stop()
                     else:
                         self.pan_tilt.update(
                             tracking_time,
@@ -1055,10 +1061,10 @@ class CameraSession:
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(f"추적 오류: {exc}")
-            self.stop.set()
+            self.request_stop()
         finally:
             if self.pan_tilt is not None:
-                self.pan_tilt.hold()
+                self.pan_tilt.stop()
 
     def alive(self):
         return any(thread.is_alive() for thread in self.threads)
@@ -1834,7 +1840,7 @@ class CameraGUI:
 
     def stop(self):
         if self.session is not None:
-            self.session.stop.set()
+            self.session.request_stop()
             self.status.set("정지 중 · 입력 해제 대기…")
             self.run_state.set("●  정지 중")
         self.stop_button.configure(state="disabled")

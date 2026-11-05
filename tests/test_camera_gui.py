@@ -286,6 +286,7 @@ def test_invalid_preview_fps_never_starts_capture(monkeypatch, camera_controls, 
 def test_close_stops_workers_before_destroying_window(camera_controls, alive):
     app, destroyed, callbacks = camera_controls, [], []
     session = SimpleNamespace(stop=threading.Event(), alive=lambda: alive, finish=lambda: None)
+    session.request_stop = session.stop.set
     app.session = session
     app.root = SimpleNamespace(
         destroy=lambda: destroyed.append(True),
@@ -1932,6 +1933,9 @@ def run_yolo_frames(monkeypatch):
         records.clear()
         session = CameraSession.__new__(CameraSession)
         session.model_path, session.threshold, session.device = "trusted-local.pt", 0.25, device
+        session.pan_tilt = gui.PanTiltController.simulated(
+            clock=None if video else gui.time.monotonic
+        )
         session.metrics = SessionMetrics({"source_type": "video_test" if video else "camera"})
         session.stop = threading.Event()
         session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
@@ -2099,6 +2103,31 @@ def test_live_output_enters_hold_while_inference_is_blocked(run_yolo_frames):
     )
     assert records[2][2] == box
     assert commands[2].state == "HOLD" and commands[2].pan_deg == commands[1].pan_deg
+
+
+@pytest.mark.parametrize("video", [False, True])
+def test_gui_stop_holds_before_blocked_inference_returns(run_yolo_frames, camera_controls, video):
+    box = (70, 10, 90, 30, 0.9)
+    commands = []
+
+    def stop_while_predicting(session, clock):
+        controller = session.pan_tilt
+        moving = controller.transport.latest
+        assert moving.state == "TRACK"
+        camera_controls.session = session
+        camera_controls.stop()
+        held = controller.transport.latest
+        assert session.stop.is_set() and held.state == "HOLD"
+        assert (held.pan_deg, held.tilt_deg) == (moving.pan_deg, moving.tilt_deg)
+
+    run_yolo_frames(
+        [(0, [box]), (0.05, [box]), (0.10, [box]), (0.15, [box])],
+        video=video,
+        commands=commands,
+        while_predicting=stop_while_predicting,
+    )
+    assert [command.state for command in commands] == ["HOLD", "TRACK", "HOLD"]
+    assert commands[2].pan_deg == commands[1].pan_deg
 
 
 @pytest.mark.parametrize("video", [False, True])
@@ -2479,6 +2508,7 @@ def preview_poll(monkeypatch, camera_controls):
         alive=lambda: False,
         finish=metrics.finish,
     )
+    session.request_stop = session.stop.set
     app.session = session
     session.previews.put((now[0], frame))
     session.results.put((now[0], (100, 200), (10, 10, 30, 30, 0.9), 0.02, (0, 0, 80, 80), "test"))
