@@ -3004,6 +3004,33 @@ def test_sidebar_switches_panels_without_stopping_active_session(camera_controls
     assert app.session is not None
 
 
+def test_manual_panel_closes_safely_and_learning_switch_locks_it(camera_controls):
+    app = camera_controls
+    actions = []
+    app.manual_visible = False
+    app.manual_button = type(app.status)()
+    app.manual_container = SimpleNamespace(
+        grid=lambda: actions.append("show"), grid_remove=lambda: actions.append("hide")
+    )
+    app.pan_window = SimpleNamespace(stop=lambda: actions.append("stop"))
+    for name in ("tracking_panel", "learning_panel"):
+        setattr(app, name, SimpleNamespace(grid_remove=lambda: None, grid=lambda **kw: None))
+    app.open_pan_control()
+    assert app.manual_visible and actions == ["show"]
+    app.open_pan_control()
+    assert not app.manual_visible and actions[-2:] == ["stop", "hide"]
+    app.page.set("learning")
+    app.show_page()
+    assert actions[-1] == "stop"
+
+
+def test_stopping_tracking_locks_manual_motor_control(camera_controls):
+    app, stopped = camera_controls, []
+    app.pan_window = SimpleNamespace(stop=lambda: stopped.append(True))
+    app.stop()
+    assert stopped == [True]
+
+
 def test_settings_unlock_restores_combobox_readonly_state(camera_controls):
     app = camera_controls
     entry, combo, button = (type(app.status)() for _ in range(3))
@@ -3046,6 +3073,34 @@ def test_centered_preview_selection_uses_original_coordinates(monkeypatch, camer
     assert selected[1] == (10, 10, 50, 40)
     assert patches == [(slice(10, 40), slice(10, 50))]
     assert app.drag_start is None
+
+
+def test_manual_panel_preserves_click_and_small_target_selection(monkeypatch, camera_controls):
+    app = camera_controls
+
+    class Frame:
+        shape = (1080, 1920, 3)
+
+        def __getitem__(self, _slices):
+            return SimpleNamespace(std=lambda: 20)
+
+    app.frame = Frame()
+    app.manual_visible = True
+    app.display_offset, app.display_scale = (0, 0), 0.36
+    app.last_display, app.drag_start, app.selection_time = 10.0, None, 0.0
+    app.session = SimpleNamespace(model_path=None, selections=queue.Queue(maxsize=1))
+    app.canvas.create_rectangle = lambda *a, **kw: 1
+    monkeypatch.setitem(
+        sys.modules, "cv2", SimpleNamespace(COLOR_BGR2GRAY=0, cvtColor=lambda a, b: a)
+    )
+    app.result = object()
+    previous_result = app.result
+    app.begin_selection(SimpleNamespace(x=100, y=100))
+    app.end_selection(SimpleNamespace(x=100, y=100))
+    assert app.session.selections.empty() and app.result is previous_result
+    app.begin_selection(SimpleNamespace(x=100, y=100))
+    app.end_selection(SimpleNamespace(x=105, y=105))
+    assert app.session.selections.get_nowait()[1] == (277, 277, 291, 291)
 
 
 def test_observation_badge_clears_after_stop(camera_controls):

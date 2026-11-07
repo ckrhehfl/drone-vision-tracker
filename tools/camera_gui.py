@@ -1,4 +1,4 @@
-"""Local camera tracking; saves stills only on opt-in and never opens Serial."""
+"""Local camera tracking; camera capture and manual pan each require an explicit operator action."""
 
 import hashlib
 import json
@@ -1124,6 +1124,8 @@ class CameraGUI:
         self.cameras = {}
         self.settings_widgets = []
         self.mode_buttons = []
+        self.pan_window = None
+        self.manual_visible = False
         default_model = installed_model()
         self.camera = tk.StringVar()
         self.source = tk.StringVar(value="camera")
@@ -1420,6 +1422,17 @@ class CameraGUI:
         )
         self.pause_button.grid(row=9, sticky="ew", pady=(8, 0))
 
+        from tools.servo01_manual_gui import Servo01Window
+
+        self.manual_button = ttk.Button(
+            self.tracking_panel, text="›  0·1번 모터 수동 조작", command=self.open_pan_control
+        )
+        self.manual_button.grid(row=1, sticky="ew", pady=(12, 0))
+        self.manual_container = ttk.Frame(self.tracking_panel)
+        self.manual_container.grid(row=2, sticky="ew", pady=(4, 0))
+        self.pan_window = Servo01Window(self.manual_container, embedded=True)
+        self.manual_container.grid_remove()
+
         advanced = tk.Frame(
             self.tracking_panel,
             background="white",
@@ -1428,7 +1441,7 @@ class CameraGUI:
             highlightbackground="#dfe6ef",
             highlightthickness=1,
         )
-        advanced.grid(row=1, column=0, sticky="new", pady=(12, 0))
+        advanced.grid(row=3, column=0, sticky="new", pady=(12, 0))
         advanced.columnconfigure(0, weight=1)
         self.advanced_button = ttk.Button(
             advanced, text="›  고급 설정", command=self.toggle_advanced
@@ -1470,7 +1483,7 @@ class CameraGUI:
             style="Muted.TLabel",
             background="#f7f9fc",
             wraplength=310,
-        ).grid(row=2, sticky="nw", pady=12)
+        ).grid(row=4, sticky="nw", pady=12)
 
         self.learning_panel = tk.Frame(
             panel_stack,
@@ -1619,12 +1632,24 @@ class CameraGUI:
 
     def show_page(self):
         learning = self.page.get() == "learning"
+        if learning and getattr(self, "pan_window", None) is not None:
+            self.pan_window.stop()
         self.heading.set("학습 · 평가" if learning else "드론 추적")
         self.tracking_panel.grid_remove()
         self.learning_panel.grid_remove()
         panel = self.learning_panel if learning else self.tracking_panel
         panel.grid(row=0, column=0, sticky="new")
         self.panel_view.yview_moveto(0)
+
+    def open_pan_control(self):
+        if self.manual_visible:
+            self.pan_window.stop()
+            self.manual_container.grid_remove()
+            self.manual_button.configure(text="›  0·1번 모터 수동 조작")
+        else:
+            self.manual_container.grid()
+            self.manual_button.configure(text="⌄  0·1번 모터 수동 조작")
+        self.manual_visible = not self.manual_visible
 
     def scroll_controls(self, event):
         self.panel_view.yview_scroll(-1 if event.num == 4 or event.delta > 0 else 1, "units")
@@ -1853,6 +1878,8 @@ class CameraGUI:
             messagebox.showerror("설정 확인", str(exc))
 
     def stop(self):
+        if getattr(self, "pan_window", None) is not None:
+            self.pan_window.stop()
         if self.session is not None:
             self.session.request_stop()
             self.status.set("정지 중 · 입력 해제 대기…")
@@ -2311,6 +2338,9 @@ class CameraGUI:
             )
 
     def close(self):
+        pan_window = getattr(self, "pan_window", None)
+        if pan_window is not None:
+            pan_window.stop()
         if (
             self.label_editor is not None
             and self.label_editor.window.winfo_exists()
@@ -2326,6 +2356,9 @@ class CameraGUI:
                 self.root.after(50, self.close)
             return
         self.closing = True
+        if pan_window is not None:
+            pan_window.close()
+            self.pan_window = None
         self.video_cancel.set()
         self.stop()
         if (

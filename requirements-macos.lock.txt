@@ -46,3 +46,5 @@ typing_extensions==4.16.0
 ultralytics==8.3.203
 ultralytics-thop==2.2.2
 urllib3==2.8.0
+
+pyserial==3.5
