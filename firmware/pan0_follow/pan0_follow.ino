@@ -151,7 +151,7 @@ bool token(const char *text) {
   return true;
 }
 void response(const char *kind, const char *who, uint32_t seq, const char *state, bool remember) {
-  char reply[112], angle[8];
+  char reply[112], angle[24];
   if (!strcmp(kind, "ACK")) {
     if (outputTicks < 0) strcpy(angle, "NA");
     else snprintf(angle, sizeof(angle), "%ld", (long)(330 - outputTicks) * 72);
