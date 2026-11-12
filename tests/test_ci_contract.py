@@ -1,4 +1,5 @@
 import importlib
+import json
 import re
 from pathlib import Path
 
@@ -27,6 +28,52 @@ def test_new_firmware_cannot_silently_skip_compile(tmp_path):
     (tmp_path / "firmware/tracker.ino").write_text("void setup() {}", encoding="utf-8")
     with pytest.raises(RuntimeError, match="compile-only"):
         check_firmware(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "version,core,passes",
+    [
+        ("1.5.1", "1.8.8", True),
+        ("1.5.0", "1.8.8", False),
+        ("1.5.1", "1.8.7", False),
+    ],
+)
+def test_firmware_build_is_pinned_and_never_opens_a_port(
+    tmp_path, monkeypatch, version, core, passes
+):
+    sketch = tmp_path / "firmware/pan0_follow/pan0_follow.ino"
+    sketch.parent.mkdir(parents=True)
+    sketch.write_text("void setup() {}", encoding="utf-8")
+    vision = tmp_path / "firmware/vision_follow/vision_follow.ino"
+    vision.parent.mkdir(parents=True)
+    vision.write_text("void setup() {}", encoding="utf-8")
+    commands = []
+    monkeypatch.setattr("tools.ci.shutil.which", lambda _: "arduino-cli")
+
+    def output(command, **kwargs):
+        if "version" in command:
+            return json.dumps({"VersionString": version})
+        return json.dumps({"platforms": [{"id": "arduino:avr", "installed_version": core}]})
+
+    monkeypatch.setattr("tools.ci.subprocess.check_output", output)
+    monkeypatch.setattr(
+        "tools.ci.subprocess.run", lambda command, **kwargs: commands.append(command)
+    )
+    if not passes:
+        with pytest.raises(RuntimeError):
+            check_firmware(tmp_path)
+        assert commands == []
+        return
+    check_firmware(tmp_path)
+    assert len(commands) == 6
+    for command in commands:
+        assert command[:4] == ["arduino-cli", "compile", "--fqbn", "arduino:avr:uno"]
+        assert "--port" not in command and "upload" not in command
+    assert "compiler.cpp.extra_flags=" in commands[0]
+    assert any("PAN0_HARDWARE_ENABLED=1" in part for part in commands[2])
+    assert any("PAN01_CENTER205_ONLY=1" in part for part in commands[1])
+    assert any("VISION_HARDWARE_ENABLED=1" in part for part in commands[-1])
+    assert str(vision.parent) in commands[-1]
 
 
 def test_tools_import_without_network_or_hardware(monkeypatch):

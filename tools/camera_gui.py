@@ -1,4 +1,4 @@
-"""Local camera tracking; saves stills only on opt-in and never opens Serial."""
+"""Local camera tracking with opt-in still collection and explicit motor commissioning."""
 
 import hashlib
 import json
@@ -1472,6 +1472,11 @@ class CameraGUI:
             wraplength=310,
         ).grid(row=2, sticky="nw", pady=12)
 
+        from tools.vision_motor_panel import MotorPanel
+
+        self.motor_panel = MotorPanel(self.tracking_panel, lambda: self.session)
+        self.motor_panel.frame.grid(row=3, sticky="ew", pady=(0, 12))
+
         self.learning_panel = tk.Frame(
             panel_stack,
             background="white",
@@ -1853,6 +1858,9 @@ class CameraGUI:
             messagebox.showerror("설정 확인", str(exc))
 
     def stop(self):
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.stop()
         if self.session is not None:
             self.session.request_stop()
             self.status.set("정지 중 · 입력 해제 대기…")
@@ -2093,6 +2101,9 @@ class CameraGUI:
         from PIL import Image, ImageTk
 
         self.finish_video_import()
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.poll()
         session = self.session
         if session is not None:
             video_input = session.metrics.settings.get("source_type") == "video_test"
@@ -2269,11 +2280,19 @@ class CameraGUI:
             self.performance.set(performance_text(session.metrics.snapshot()))
             if command is not None:
                 limit = " · 범위 제한" if command.saturated else ""
-                self.performance.set(
-                    self.performance.get()
-                    + f" · 모의 {command.state}: 팬 {command.pan_deg:.1f}° / "
-                    f"틸트 {command.tilt_deg:.1f}°{limit}"
-                )
+                if getattr(controller, "nominal_ticks", False):
+                    pan_tick = round(330 - command.pan_deg / 0.72)
+                    tilt_tick = round(330 - command.tilt_deg / 0.72)
+                    self.performance.set(
+                        self.performance.get()
+                        + f" · 모터 목표 {command.state}: 0번 {pan_tick} / 1번 {tilt_tick}틱{limit}"
+                    )
+                else:
+                    self.performance.set(
+                        self.performance.get()
+                        + f" · 모의 {command.state}: 팬 {command.pan_deg:.1f}° / "
+                        f"틸트 {command.tilt_deg:.1f}°{limit}"
+                    )
             if session.collector is not None:
                 collector = session.collector
                 self.performance.set(
@@ -2328,11 +2347,14 @@ class CameraGUI:
         self.closing = True
         self.video_cancel.set()
         self.stop()
+        motor_panel = getattr(self, "motor_panel", None)
         if (
             self.session
             and self.session.alive()
             or self.video_thread
             and self.video_thread.is_alive()
+            or motor_panel is not None
+            and motor_panel.alive()
         ):
             self.root.after(50, self.close)
         else:

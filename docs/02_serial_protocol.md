@@ -55,3 +55,112 @@ BAD_FORMAT, UNSUPPORTED_VERSION, LINE_TOO_LONG, SESSION_MISMATCH, STALE_SEQUENCE
 정상 명령, 음수·과대값·소수·NaN, 부분 수신, 두 줄 동시 수신, CRLF, 96바이트 경계·초과, 잘못된 세션, 중복·역순 seq, 같은 seq의 다른 payload, 보정 전 ARM, DISARM 후 SET, 프로세스 강제 종료, USB 분리, 연결 복원 후 재ARM을 시험한다.
 
 명령 수락, PWM 갱신, 실제 각도 도달은 서로 다른 사건이다. ACK로 마지막 사건을 주장하지 않는다.
+
+## 7. PAN0_TEST1 시운전 프로파일
+
+`firmware/pan0_follow`와 `tools.pan0_follow`의 0번 단독 시험은 위 프레이밍·세션·명령·
+centidegree 눈금·watchdog을 재사용한다. **2축 v1 구현 완료가 아니다.**
+1번 미보정을 CALIBRATED로 오인하지 않도록 준비된 빌드도 마지막 READY 필드를 `PAN0_TEST1`로
+반환하며 일반 v1 클라이언트는 이를 CALIBRATED로 수락하면 안 된다. 기본 빌드는 UNCALIBRATED다.
+
+```text
+READY,1,A1B2C3D4,DISARMED,PAN0_TEST1
+PROFILE,PAN0_TEST1,200,205,210
+SET,A1B2C3D4,2,9000,0
+ACK,A1B2C3D4,2,TRACK,9000,NA
+```
+
+PROFILE의 세 값은 하한/시작/상한 틱이며 위 값은 합성 예시다. 호스트는 포트 개방 전에 운영자
+확인을 받고, 이후 준비 필드와 PROFILE이 모두 정확히 맞을 때만 ARM과 첫 SET을 진행한다.
+SET의 tilt 필드는 예약 정수 0만 허용하고
+채널 1 PWM은 쓰지 않는다. ACK의 tilt는 항상 NA다. pan은 `(330 - ticks) * 72` 명령 눈금이며
+실제 각도가 아니다. 첫 SET은 확인된 시작 틱만 허용한다. 이후 1틱/50ms로만 접근한다.
+HOLD/DISARM은 현재 출력 틱으로 목표를 바꾼다. 같은 세션 HELLO도 DISARM하며 seq를 되돌리지
+않고 이전 ACK 캐시를 무효화한다. 잘못된 형식·범위·역순/충돌은 구동을 잠근다.
+상세한 빌드와 현장 준비는 [시운전 안내](pan0-motor-test.md)를 따른다.
+
+부팅 시 `BOOT,PAN0_TEST1` 다음에는 `PWM0,on,off,mode1,mode2,prescale` 진단 줄을 출력한다.
+모두 초기화 쓰기 전 R/W 레지스터의 원시 정수값이며, I2C 읽기 실패는 `PWM0,UNREADABLE`이다.
+출력 허용이나 실제 위치의 확인이 아니다. 일반 호스트는 부팅 대기 후 수신 버퍼를 비우고
+HELLO를 시작하므로 기존 READY/PROFILE 교환 순서는 유지된다.
+
+유효한 PAN0_TEST1 빌드의 부팅 시 채널 0의 `on=0, off=START_TICKS`가 읽히고
+MODE1/MODE2/PRE_SCALE이 일치하면, PWM 쓰기 없이 그 시작 명령을 이어받아 DISARMED로 준비한다.
+다른 활성 값이나 비활성 기본 빌드는 이 값을 자동으로 이어받지 않는다. ARM은 여전히 별도다.
+
+## 8. CENTER01_205 고정 초기화 프로파일
+
+2026-11-11 사용자가 두 축의 80~330틱 움직임 안전을 확인했고 두 채널을 205틱으로
+초기화하도록 직접 지시했다. `PAN01_CENTER205_ONLY=1`과 `PAN0_HARDWARE_ENABLED=1`을
+함께 지정한 빌드는 기존 세션·ARM·SET·DISARM을 재사용하되 SET은 **9000,9000만** 허용한다.
+0번과 1번을 모두 205틱으로 설정하며 다른 목표나 자동 추종은 수행하지 않는다.
+
+```text
+READY,1,A1B2C3D4,DISARMED,CENTER01_205
+PROFILE,CENTER01_205,205,205
+ARM,A1B2C3D4,1
+SET,A1B2C3D4,2,9000,9000
+ACK,A1B2C3D4,2,TRACK,9000,9000
+DISARM,A1B2C3D4,3
+ACK,A1B2C3D4,3,DISARMED,9000,9000
+```
+
+기본 빌드는 계속 비활성이다. 연결과 ARM은 PWM을 쓰지 않는다. 두 채널 모두 FULL_OFF로
+시작해야 하며 SET 때 두 채널을 FULL_OFF 상태에서 준비·검증한 다음 각각 205틱을 활성화한다.
+두 채널의 활성화는 원자적이지 않다. 오류 시 한 채널만 205틱이 적용됐을 수도 있으므로
+성공 응답과 읽기 검증이 없으면 외부전원을 복구하지 않는다. 부팅 진단에 PWM1 원시 on/off도 추가한다.
+PWM 쓰기는 0·1번에 한정되며 설정 후에는 watchdog/DISARM도 두 205틱을 유지한다.
+외부전원 인가 시 현재 위치에서 205틱 목표로 움직일 수 있다. 이 첫 이동에는 속도 제한이 없다.
+ACK는 검증된 PWM 명령이며 실제 각도나 도달 확인이 아니다. 일반 PAN0 호스트는 이 프로파일을 거부한다.
+
+## 9. VISION_TICKS1 통합 시운전 프로파일
+
+기존 centidegree `SET`과 구분해 원시틱을 쓰는 전용 프로파일이다. 기존 v1 일반 SET이나
+PAN0_TEST1·수동/간섭 시험 클라이언트는 이 프로파일에 연결하지 않는다.
+GUI의 실시간 YOLO만 별도 모터 worker로 연결하며, 연결·영상 시작으로 자동 ARM하지 않는다.
+기본 펌웨어 출력 허용은 false이며 [현장 준비](vision-motors.md)가 필요하다.
+
+```text
+HELLO,1,A1B2C3D4
+READY,1,A1B2C3D4,DISARMED,VISION_TICKS1,208,205
+LIMITS,VISION_TICKS1,80,330
+ARM,A1B2C3D4,1
+ACK,A1B2C3D4,1,ARMED,208,205
+SET_TICKS,A1B2C3D4,2,207,206
+ACK,A1B2C3D4,2,TRACK,208,205
+HOLD,A1B2C3D4,3
+ACK,A1B2C3D4,3,HOLD,208,205
+DISARM,A1B2C3D4,4
+ACK,A1B2C3D4,4,DISARMED,208,205
+```
+
+READY의 두 숫자는 이미 존재하는 PWM 명령이다. FULL_OFF·범위 밖·클록/모드 불일치·읽기 오류면
+`DISARMED` 대신 `LOCKED`이며 호스트는 ARM 전에 거부한다. 자동 초기화와205틱 이동은 없다.
+SET_TICKS의 두 값은 정수80..330, ACK의 두 값은 마지막 확인 출력 명령이다. ACK는 목표 도달이 아니다.
+최대1틱/50ms로 접근하고 HOLD는 그 진행을 현재 출력 명령에서 취소한다.
+프레임 신선도100ms, 목표 전송 최대20Hz, ACK150ms, 펌웨어 watchdog500ms는 유지한다.
+
+ARM은 OCH ACK 모드만 설정하고 PWM 명령은 쓰지 않는다. 각 축 PWM의4레지스터를 모두 전송한다.
+정상 DISARM은 일관된 PWM 확인 후 OCH STOP 모드로 복원하고, I2C 오류 후에는 복원하지 않아
+리셋 재접속도 잠근다. HELLO와 새 세션은 구동을 해제하며, 같은 세션의 sequence를 초기화하지 않는다.
+중복은 과거 ACK만 반환하고 이동·watchdog을 갱신하지 않는다. 이전/충돌 sequence와 잘못된
+형식·범위는 구동을 잠근다. 진단 PING은 ACK 형식의 ARMED/DISARMED를 반환하되 watchdog을 연장하지 않는다.
+호스트는 오류 후 FAULT를 유지하며 DISARM 이외 재전송·재ARM을 하지 않는다.
+정리 DISARM의 유효한 과거 ACK만 고정 deadline 안에서 건너뛴다.
+
+### 잠금 진단
+
+구동 해제 또는 LOCKED 상태에서 `DIAG,<session>,<seq>`로 실제 레지스터를 읽을 수 있다.
+세션·sequence 검증과 중복 응답 규칙을 그대로 따른다. 출력·모드·클록·ready 상태를 바꾸거나
+watchdog을 연장하지 않는다. ARMED에서는 `ERR,...,DIAG_REQUIRES_DISARM`, 읽기 오류는
+`ERR,...,DIAG_READ_FAILED`다. 이 진단은 현재 위치·실제 각도·물리적 정지를 측정하지 않는다.
+
+```text
+DIAG,A1B2C3D4,1
+DIAG,A1B2C3D4,1,1,32,12,121,0,82,0,330
+```
+
+응답 필드는 `DIAG,session,seq,hardware_enabled,MODE1,MODE2,PRE_SCALE,ON0,OFF0,ON1,OFF1`다.
+숫자는 십진 원시값이며 FULL_OFF 등 비트도 그대로 포함한다. 예제는 MODE2=12 표식이 남아
+잠금 상태인 경우이며 자동 복구 허가가 아니다. GUI는 LOCKED 연결 때만 DIAG를 한 번 요청하고
+검증한 사유를 표시한 뒤 포트를 닫는다. 진단에만 최대1초를 허용하며 구동 ACK150ms는 유지한다.
