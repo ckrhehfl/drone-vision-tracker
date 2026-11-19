@@ -115,6 +115,12 @@ int main(int argc, char **argv) {
     fakeTime += 100; loop(); assert(armed && outputTicks == 204 && targetTicks == 204);
     command("DISARM,ABCDEF12,5"); command("SET,ABCDEF12,6,9000,0");
     assert(!armed && outputTicks == 204);
+  } else if (mode == "second-arm") {
+    command("SET,ABCDEF12,3,9360,0"); assert(targetTicks == 200 && outputTicks == 205);
+    command("ARM,ABCDEF12,4"); assert(!armed && targetTicks == 205);
+    assert(Serial.output.find("BAD_FORMAT") != std::string::npos);
+    auto count = writes.size();
+    fakeTime += 100; loop(); assert(outputTicks == 205 && writes.size() == count);
   } else if (mode == "replay") {
     fakeTime += 400; command("SET,ABCDEF12,2,9000,0");
     assert(armed && lastMotion == 1);

@@ -5,10 +5,13 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from queue import Empty, Full, Queue
 
 from tools.pan_tilt import AxisConfig, PanTiltCommand, PanTiltController
 
 MIN_TICKS, MAX_TICKS = 80, 330
+MANUAL_DISPLAY_MAX_AGE = 0.5
+STEP_SETTLE_DELAY = 0.1
 
 
 def nominal_angle(ticks):
@@ -19,8 +22,10 @@ def nominal_angle(ticks):
 class MotorProfile:
     tilt_min: int = MIN_TICKS
     tilt_max: int = MAX_TICKS
-    tilt_direction: int = 1  # Increasing ticks moves the installed camera upward.
+    tilt_direction: int = 1  # Raw-image direction for an increase in ticks.
     tilt_rate: float = 5  # Commissioning ticks/s, not measured shaft speed.
+    tilt_only: bool = False
+    manual_tilt: bool = False
 
     def __post_init__(self):
         if (
@@ -34,6 +39,10 @@ class MotorProfile:
             or not 0 < self.tilt_rate <= 10
         ):
             raise ValueError("1번 범위는 80~330틱 안, 시험 속도는 0 초과 10틱/초 이하입니다.")
+        if self.tilt_only and self.tilt_rate > 2:
+            raise ValueError("1번 상하 자동은 최대 2틱/초입니다.")
+        if self.manual_tilt and (self.tilt_only or self.tilt_rate > 2):
+            raise ValueError("키보드 시험은 자동 조작과 함께 선택할 수 없으며 최대 2틱/초입니다.")
 
     def validate_ticks(self, ticks):
         if (
@@ -44,7 +53,7 @@ class MotorProfile:
         ):
             raise ValueError("현재/목표 PWM 명령이 확인한 축별 범위 밖입니다.")
 
-    def controller(self, ticks, *, on_delay_hold=None):
+    def controller(self, ticks, *, on_delay_hold=None, flip_vertical=False):
         self.validate_ticks(ticks)
         controller = PanTiltController(
             AxisConfig(0, 90, 180, 1, 7.2, 7.2),
@@ -52,12 +61,13 @@ class MotorProfile:
                 nominal_angle(self.tilt_max),
                 nominal_angle((self.tilt_min + self.tilt_max) / 2),
                 nominal_angle(self.tilt_min),
-                self.tilt_direction,
+                -self.tilt_direction if flip_vertical else self.tilt_direction,
                 self.tilt_rate * 0.72,
                 self.tilt_rate * 0.72,
             ),
             clock=time.monotonic,
             on_delay_hold=on_delay_hold,
+            track_pan=not self.tilt_only,
         )
         # Seed the retained commands, including endpoints; never move to an arithmetic centre.
         controller.transport.send(PanTiltCommand(*(nominal_angle(t) for t in ticks)))
@@ -73,14 +83,22 @@ class MotorProfile:
         return ticks
 
 
-def can_arm(session):
-    return bool(
-        session is not None
-        and session.model_path
-        and session.video_path is None
-        and not session.stop.is_set()
-        and session.metrics.snapshot()["counts"]["process"] > 0
-    )
+def _live_preview(session):
+    displayed = session.metrics.last_display
+    return displayed is not None and 0 <= time.monotonic() - displayed <= MANUAL_DISPLAY_MAX_AGE
+
+
+def can_arm(session, profile):
+    if session is None or session.video_path is not None or session.stop.is_set():
+        return False
+    if profile.manual_tilt:
+        return _live_preview(session)
+    if session.model_path:
+        return session.metrics.snapshot()["counts"].get("process", 0) > 0
+    if not profile.tilt_only or session.manual_target_lost:
+        return False
+    observed = session.manual_displayed_at
+    return observed is not None and 0 <= time.monotonic() - observed <= MANUAL_DISPLAY_MAX_AGE
 
 
 class TicksLink:
@@ -92,11 +110,17 @@ class TicksLink:
         self.buffer = bytearray()
         self.connected = self.armed = self.faulted = False
         self.ticks = None
+        self._fixed_pan = None
 
-    def _write(self, line):
+    def _write(self, line, *, dispatch=None):
         data = (line + "\n").encode("ascii")
-        if self.port.write(data) != len(data):
-            raise RuntimeError("모터 명령 부분 전송: 재전송하지 않습니다.")
+
+        def write():
+            if self.port.write(data) != len(data):
+                raise RuntimeError("모터 명령 부분 전송: 재전송하지 않습니다.")
+            return True
+
+        return write() if dispatch is None else dispatch(write)
 
     def _line(self, deadline):
         while self.clock() < deadline:
@@ -174,9 +198,11 @@ class TicksLink:
                 f"모터 구동 잠금: {detail}. 외부전원 OFF 유지·별도 복구가 필요합니다."
             )
         self.ticks = self._ticks(reply[5:])
+        if self.profile.tilt_only:
+            self._fixed_pan = self.ticks[0]
         self.connected = True
 
-    def request(self, command, *values):
+    def request(self, command, *values, dispatch=None):
         states = {"ARM": "ARMED", "SET_TICKS": "TRACK", "HOLD": "HOLD", "DISARM": "DISARMED"}
         if command not in states or (values and command != "SET_TICKS"):
             raise ValueError("지원하지 않는 모터 명령")
@@ -190,9 +216,14 @@ class TicksLink:
             raise RuntimeError("운영자의 구동 허가가 필요합니다.")
         if command == "SET_TICKS":
             self.profile.validate_ticks(values)
+            if self._fixed_pan is not None and values[0] != self._fixed_pan:
+                raise ValueError("0번 고정 출력 명령과 다른 목표를 차단했습니다.")
         self.sequence += 1
         try:
-            self._write(",".join(map(str, (command, self.token, self.sequence, *values))))
+            line = ",".join(map(str, (command, self.token, self.sequence, *values)))
+            if not self._write(line, dispatch=dispatch):
+                self.sequence -= 1
+                return None
             deadline = self.clock() + 0.15
             while True:
                 reply = self._line(deadline)
@@ -211,6 +242,8 @@ class TicksLink:
                 if reply[2:4] != [str(self.sequence), states[command]]:
                     raise RuntimeError(f"모터 ACK 불일치: {reply}")
                 self.ticks, self.armed = ticks, command != "DISARM"
+                if self._fixed_pan is not None and ticks[0] != self._fixed_pan:
+                    raise RuntimeError("0번 고정 출력 명령이 달라 구동을 종료합니다.")
                 return ticks
         except (OSError, RuntimeError, ValueError):
             self.faulted, self.armed = True, False
@@ -239,15 +272,34 @@ class MotorWorker:
         self.stopping = threading.Event()
         self.state, self.error, self.ticks = "CONNECTING", None, None
         self.controller = self.session = self._requested_session = None
+        self._jog_keys = Queue(maxsize=1)
+        self._jog_confirmed = self._jog_goal = None
+        self._jog_check_at = self._jog_ready_at = 0.0
+        self._tilt_step = None
+        self._tilt_check_at = self._tilt_ready_at = 0.0
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
         self.thread.start()
 
     def arm(self, session):
-        if self.state != "READY" or not can_arm(session):
-            raise ValueError("실시간 YOLO 카메라의 첫 처리 결과를 기다린 뒤 구동하세요.")
+        if self.state != "READY" or self.stopping.is_set() or not can_arm(session, self.profile):
+            raise ValueError(
+                "실시간 영상이 준비된 뒤 구동하세요. 수동 지정 추종은 관측 박스가 필요합니다."
+            )
         self._requested_session, self.state = session, "ARMING"
+
+    def jog(self, delta):
+        if (
+            self.profile.manual_tilt
+            and self.state == "ARMED"
+            and not self.stopping.is_set()
+            and delta in (-1, 1)
+        ):
+            try:
+                self._jog_keys.put_nowait((time.monotonic(), delta))
+            except Full:
+                pass
 
     def stop(self):
         self.stopping.set()
@@ -256,6 +308,131 @@ class MotorWorker:
 
     def alive(self):
         return self.thread.is_alive()
+
+    def _write_if_active(self, write):
+        return not self.session.stop.is_set() and not self.stopping.is_set() and write()
+
+    def _follow_both_cycle(self, link):
+        command = self.controller.snapshot()
+        if command.state == "TRACK":
+            ticks = link.request(
+                "SET_TICKS",
+                *self.profile.command_ticks(command),
+                dispatch=lambda write: self.controller.dispatch_tracking(
+                    lambda latest, _: latest == command, lambda: self._write_if_active(write)
+                ),
+            )
+            if ticks is not None:
+                self.ticks = ticks
+                return
+        ticks = link.request("HOLD", dispatch=self._write_if_active)
+        if ticks is not None:
+            self.ticks = ticks
+
+    def _tilt_target(self, tilt, command, tilt_adjustment):
+        if (
+            command.state != "TRACK"
+            or tilt_adjustment == 0
+            or (command.tilt_deg - nominal_angle(tilt)) * tilt_adjustment < 0
+        ):
+            return None
+        return self.profile.command_ticks(command)[1]
+
+    def _follow_tilt_cycle(self, link):
+        if self.stopping.is_set() or self.session.stop.is_set():
+            return
+        manual_source = self.session.model_path is None
+        if manual_source and not _live_preview(self.session):
+            raise RuntimeError("실시간 화면 갱신이 끊겨 수동 지정 추종을 종료합니다.")
+        pan, tilt = self.ticks
+        target = None
+        if not manual_source or not self.session.manual_target_lost:
+            target = self._tilt_target(tilt, *self.controller.tilt_snapshot())
+        now = time.monotonic()
+        if self._tilt_step is not None:
+            step = self._tilt_step
+            continuing = target is not None and (target - tilt) * (step - tilt) > 0
+            if continuing and now < self._tilt_check_at:
+                return
+            self.ticks = link.request("HOLD")
+            if self.ticks[1] != step and (continuing or self.ticks[1] != tilt):
+                raise RuntimeError("1번 상하 자동 한 틱 출력 확인 실패")
+            self._tilt_step = None
+            self._tilt_ready_at = time.monotonic() + 1 / self.profile.tilt_rate
+            self.controller.align_tilt_output(nominal_angle(self.ticks[1]))
+            return
+        if target is not None and target != tilt and now >= self._tilt_ready_at:
+            step = tilt + (1 if target > tilt else -1)
+
+            def dispatch(write):
+                if manual_source and not _live_preview(self.session):
+                    return False
+
+                def same_direction(command, adjustment):
+                    if manual_source and self.session.manual_target_lost:
+                        return False
+                    current = self._tilt_target(tilt, command, adjustment)
+                    return current is not None and (current - tilt) * (step - tilt) > 0
+
+                return self.controller.dispatch_tracking(
+                    same_direction, lambda: self._write_if_active(write)
+                )
+
+            response = link.request("SET_TICKS", pan, step, dispatch=dispatch)
+            if response is not None:
+                self.ticks = response
+                self._tilt_step = step
+                self._tilt_check_at = time.monotonic() + STEP_SETTLE_DELAY
+            else:
+                target = None
+        if self._tilt_step is None:
+            if self.stopping.is_set() or self.session.stop.is_set():
+                return
+            self.ticks = link.request("HOLD")
+        if self.ticks[1] != tilt:
+            raise RuntimeError("1번 상하 자동의 이전 출력 명령이 달라 구동을 종료합니다.")
+        if target is None:
+            self.controller.align_tilt_output(nominal_angle(tilt))
+
+    def _manual_cycle(self, link):
+        if self.stopping.is_set() or self.session.stop.is_set():
+            return
+        if not _live_preview(self.session):
+            raise RuntimeError("실시간 화면 갱신이 끊겨 키보드 시험을 종료합니다.")
+        try:
+            pressed_at, delta = self._jog_keys.get_nowait()
+        except Empty:
+            pressed_at, delta = 0.0, 0
+        now = time.monotonic()
+        if self._jog_goal is not None:
+            if now >= self._jog_check_at:
+                self.ticks = link.request("HOLD")
+                if self.ticks != self._jog_goal:
+                    raise RuntimeError("1번 한 틱 출력 확인 실패")
+                self._jog_confirmed = self.ticks
+                self._jog_goal = None
+                self._jog_ready_at = time.monotonic() + 1 / self.profile.tilt_rate
+            return
+        pan, previous_tilt = self._jog_confirmed
+        tilt = previous_tilt + delta
+        if (
+            delta
+            and 0 <= now - pressed_at <= 0.15
+            and pressed_at >= self._jog_ready_at
+            and self.profile.tilt_min <= tilt <= self.profile.tilt_max
+        ):
+            if self.stopping.is_set() or self.session.stop.is_set():
+                return
+            if not _live_preview(self.session):
+                raise RuntimeError("실시간 화면 갱신이 끊겨 키보드 시험을 종료합니다.")
+            self.ticks = link.request("SET_TICKS", pan, tilt)
+            self._jog_goal = (pan, tilt)
+            # Wait for one 50 ms firmware step before HOLD can cancel the new target.
+            self._jog_check_at = time.monotonic() + STEP_SETTLE_DELAY
+        else:
+            self.ticks = link.request("HOLD")
+        if self.ticks != self._jog_confirmed:
+            raise RuntimeError("확인된 틱과 응답이 달라 키보드 시험을 종료합니다.")
 
     def _run(self):
         link = None
@@ -269,30 +446,46 @@ class MotorWorker:
                 started = time.monotonic()
                 if self.state == "ARMING":
                     source = self._requested_session
-                    if not can_arm(source):
+                    if not can_arm(source, self.profile):
                         raise RuntimeError("구동 전 영상 입력이 종료되거나 바뀌었습니다.")
                     expected = link.ticks
-                    controller = self.profile.controller(
-                        expected, on_delay_hold=source.metrics.delay_hold
+                    controller = None
+                    if not self.profile.manual_tilt:
+                        controller = self.profile.controller(
+                            expected,
+                            on_delay_hold=source.metrics.delay_hold,
+                            flip_vertical=source.metrics.settings.get("flip_vertical", False),
+                        )
+                    retained = link.request(
+                        "ARM",
+                        dispatch=lambda write, source=source: (
+                            not source.stop.is_set() and not self.stopping.is_set() and write()
+                        ),
                     )
-                    retained = link.request("ARM")
+                    if retained is None:
+                        break
                     if retained != expected:
                         raise RuntimeError("구동 전 PWM 명령이 바뀌었습니다.")
                     if source.stop.is_set() or self.stopping.is_set():
                         break
-                    controller.set_paused(False)
-                    source.pan_tilt.stop()
-                    source.pan_tilt = controller
+                    if source.pan_tilt is not None:
+                        source.pan_tilt.stop()
+                    if controller is not None:
+                        controller.set_paused(False)
+                        source.pan_tilt = controller
+                    else:
+                        self._jog_confirmed = retained
                     self.controller, self.session, self.state = controller, source, "ARMED"
                     source.metrics.settings["motor_profile"] = "VISION_TICKS1"
                 if self.session is not None:
                     if self.session.stop.is_set() or self.stopping.is_set():
                         break
-                    command = self.controller.snapshot()
-                    if command.state == "TRACK":
-                        self.ticks = link.request("SET_TICKS", *self.profile.command_ticks(command))
+                    if self.profile.manual_tilt:
+                        self._manual_cycle(link)
+                    elif self.profile.tilt_only:
+                        self._follow_tilt_cycle(link)
                     else:
-                        self.ticks = link.request("HOLD")
+                        self._follow_both_cycle(link)
                 self.stopping.wait(max(0, 0.05 - (time.monotonic() - started)))
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             self.error = str(exc)
@@ -302,7 +495,7 @@ class MotorWorker:
             if link is not None:
                 try:
                     link.close()
-                    self.ticks = link.ticks
                 except (OSError, RuntimeError, ValueError) as exc:
-                    self.error = f"{self.error or ''} 모터 정리 응답 미확인: {exc}".strip()
+                    self.error = f"{self.error or ''} 모터 정리 오류: {exc}".strip()
+                self.ticks = link.ticks
             self.state = "FAULT" if self.error else "CLOSED"

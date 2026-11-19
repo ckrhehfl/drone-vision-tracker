@@ -77,6 +77,7 @@ def firmware(tmp_path_factory):
         "bad-mode",
         "initial",
         "track-hold",
+        "second-arm",
         "replay",
         "ping",
         "hello",

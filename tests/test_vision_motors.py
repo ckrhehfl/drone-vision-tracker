@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.vision_motors import MotorProfile, MotorWorker, TicksLink, can_arm
+from tools.pan_tilt import PanTiltCommand
+from tools.vision_motors import MotorProfile, MotorWorker, TicksLink, can_arm, nominal_angle
 
 
 class Clock:
@@ -67,6 +68,29 @@ class Port:
         self.closed = True
 
 
+class TiltStepPort(Port):
+    def __init__(self, ticks, clock):
+        super().__init__(ticks)
+        self.clock = clock
+        self.goal = None
+        self.apply_at = 0.0
+        self.applied = []
+
+    def write(self, data):
+        action = data.split(b",", 1)[0]
+        now = self.clock()
+        if self.goal is not None and now >= self.apply_at:
+            self.ticks, self.goal = self.goal, None
+            self.applied.append((now, self.ticks))
+        written = super().write(data)
+        if action == b"SET_TICKS":
+            self.goal = tuple(map(int, self.writes[-1][3:]))
+            self.apply_at = now + 0.05
+        elif action in (b"HOLD", b"DISARM"):
+            self.goal = None
+        return written
+
+
 def connected(ticks=(208, 205), profile=None):
     clock, port = Clock(), Port(ticks)
     link = TicksLink(port, profile or MotorProfile(), clock=clock, sleep=clock.sleep)
@@ -118,6 +142,305 @@ def test_only_camera_axis_adjustment_changes_and_installed_sign_is_correct():
     assert command.tilt_deg < baseline.transport.latest.tilt_deg
     assert command.pan_deg == baseline.transport.latest.pan_deg
     assert MotorProfile(100, 300, 1, 2).command_ticks(command)[1] >= 205
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [(79, 330, 1, 2), (80, 331, 1, 2), (80, 330, 0, 2), (80, 330, 1, 2.1)],
+)
+def test_tilt_only_rejects_out_of_range_limits_speed_or_direction(settings):
+    with pytest.raises(ValueError):
+        MotorProfile(*settings, tilt_only=True)
+
+
+def test_tilt_only_link_rejects_an_outgoing_pan_change_without_sending_it():
+    link, port, _ = connected((247, 254), MotorProfile(tilt_rate=2, tilt_only=True))
+    link.request("ARM")
+    with pytest.raises(ValueError, match="0번 고정"):
+        link.request("SET_TICKS", 248, 255)
+    assert [w[0] for w in port.writes] == ["HELLO", "ARM"]
+    link.close()
+
+
+@pytest.mark.parametrize(("command", "ticks"), [("HOLD", ()), ("SET_TICKS", (247, 255))])
+def test_tilt_only_link_locks_on_an_unexpected_pan_ack_and_can_disarm(command, ticks):
+    link, port, _ = connected((247, 254), MotorProfile(tilt_rate=2, tilt_only=True))
+    link.request("ARM")
+    port.ticks = (248, 254)
+    with pytest.raises(RuntimeError, match="0번 고정"):
+        link.request(command, *ticks)
+    with pytest.raises(RuntimeError, match="FAULT"):
+        link.request("SET_TICKS", 247, 255)
+    port.ticks = (247, 254)
+    link.close()
+    assert port.closed and [w[0] for w in port.writes] == ["HELLO", "ARM", command, "DISARM"]
+
+
+def test_tilt_only_reports_pan_mismatch_on_the_final_disarm_ack():
+    link, port, _ = connected((247, 254), MotorProfile(tilt_rate=2, tilt_only=True))
+    link.request("ARM")
+    port.ticks = (248, 254)
+    with pytest.raises(RuntimeError, match="0번 고정"):
+        link.close()
+    assert port.closed and port.writes[-1][0] == "DISARM"
+    assert link.ticks == (248, 254)
+
+
+@pytest.mark.parametrize(
+    ("flip_vertical", "raw_direction", "model", "start", "first", "outbound_above"),
+    [
+        (False, 1, "local.pt", 80, 81, True),
+        (False, 1, "local.pt", 330, 329, False),
+        (False, 1, "local.pt", 255, 256, True),
+        (True, 1, "local.pt", 330, 329, True),
+        (True, 1, "local.pt", 255, 256, False),
+        (True, -1, None, 205, 206, True),
+    ],
+)
+def test_tilt_only_worker_keeps_retained_pan_during_vertical_tracking(
+    monkeypatch, flip_vertical, raw_direction, model, start, first, outbound_above
+):
+    profile = MotorProfile(tilt_direction=raw_direction, tilt_rate=2, tilt_only=True)
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    monkeypatch.setattr(
+        "tools.vision_motors.TicksLink",
+        lambda port, profile: TicksLink(port, profile, clock=clock, sleep=clock.sleep),
+    )
+    port, session = TiltStepPort((247, start), clock), source(model=model)
+    session.metrics.settings["flip_vertical"] = flip_vertical
+    worker = MotorWorker("fake", profile, serial_factory=lambda _: port)
+    above, below = (30, 20, 40, 30), (60, 70, 70, 80)
+    outbound, returning = (above, below) if outbound_above else (below, above)
+    delayed = False
+    cycles = 0
+
+    def wait(timeout):
+        nonlocal delayed, cycles
+        clock.sleep(timeout)
+        cycles += 1
+        assert cycles < 100
+        if worker.state == "READY":
+            session.manual_displayed_at = session.metrics.last_display = clock()
+            worker.arm(session)
+        elif worker.state == "ARMED":
+            if not delayed:
+                # Fresh observations can accumulate while the serial worker is stalled.
+                delayed = True
+                for _ in range(100):
+                    clock.sleep(0.05)
+                    worker.controller.update(clock(), (100, 100), outbound, received_at=clock())
+            session.metrics.last_display = clock()
+            if len(port.applied) == 2:
+                session.stop.set()
+            else:
+                box = returning if port.applied else outbound
+                worker.controller.update(clock(), (100, 100), box, received_at=clock())
+        return False
+
+    worker.stopping.wait = wait
+    worker._run()
+    assert worker.state == "CLOSED" and port.closed
+    assert [w[3:] for w in port.writes if w[0] == "SET_TICKS"] == [
+        ["247", str(first)],
+        ["247", str(start)],
+    ]
+    assert [ticks for _, ticks in port.applied] == [(247, first), (247, start)]
+    assert port.applied[1][0] - port.applied[0][0] >= 0.5
+    assert port.writes[-1][0] == "DISARM"
+
+
+@pytest.mark.parametrize("loss_delay", [None, 0.0, 0.08])
+def test_tilt_only_does_not_chase_jitter_or_a_lost_observation(monkeypatch, loss_delay):
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    profile = MotorProfile(tilt_rate=2, tilt_only=True)
+    port = TiltStepPort((247, 205), clock)
+    link = TicksLink(port, profile, clock=clock, sleep=clock.sleep)
+    link.connect()
+    worker = MotorWorker("fake", profile)
+    worker.ticks = link.request("ARM")
+    worker.session = source()
+    observed_tilt, state = 205.54, "TRACK"
+    worker.controller = SimpleNamespace(
+        tilt_snapshot=lambda: (
+            PanTiltCommand(nominal_angle(247), nominal_angle(observed_tilt), state),
+            -0.9 if observed_tilt > 205.5 else 0.9,
+        ),
+        align_tilt_output=lambda _: None,
+    )
+    worker.controller.dispatch_tracking = (
+        lambda accepts, write: accepts(*worker.controller.tilt_snapshot()) and write()
+    )
+    worker._follow_tilt_cycle(link)
+    assert port.writes[-1][3:] == ["247", "206"]
+    if loss_delay is not None:
+        clock.sleep(loss_delay)
+        state = "HOLD"
+        worker._follow_tilt_cycle(link)
+        assert port.writes[-1][0] == "HOLD"
+        clock.sleep(1)
+        worker._follow_tilt_cycle(link)
+        expected = (247, 205 if loss_delay == 0 else 206)
+        assert port.ticks == expected and port.goal is None
+        assert len(port.applied) == int(loss_delay > 0)
+    else:
+        clock.sleep(0.12)
+        worker._follow_tilt_cycle(link)
+        assert port.ticks == (247, 206)
+        for value in (205.45, 205.54) * 3:
+            observed_tilt = value
+            clock.sleep(0.05)
+            worker._follow_tilt_cycle(link)
+        assert [w[3:] for w in port.writes if w[0] == "SET_TICKS"] == [["247", "206"]]
+        clock.sleep(0.5)
+        observed_tilt = 205.45
+        worker._follow_tilt_cycle(link)
+        assert port.writes[-1][3:] == ["247", "205"]
+        clock.sleep(0.12)
+        worker._follow_tilt_cycle(link)
+        assert port.applied[1][0] - port.applied[0][0] >= 0.5
+    link.close()
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("new_box", [(35, 80, 55, 90), (35, 45, 55, 55)])
+def test_latest_tilt_error_overrides_an_older_integrated_target(monkeypatch, pending, new_box):
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    profile = MotorProfile(tilt_rate=2, tilt_only=True)
+    port = TiltStepPort((247, 205), clock)
+    link = TicksLink(port, profile, clock=clock, sleep=clock.sleep)
+    link.connect()
+    worker = MotorWorker("fake", profile)
+    worker.ticks = link.request("ARM")
+    worker.session = source()
+    worker.controller = profile.controller(worker.ticks)
+    for _ in range(26):
+        clock.sleep(0.02)
+        worker.controller.update(clock(), (100, 100), (35, 10, 55, 20))
+    if pending:
+        worker._follow_tilt_cycle(link)
+        assert port.writes[-1][3:] == ["247", "206"]
+    clock.sleep(0.02)
+    reversed_command = worker.controller.update(clock(), (100, 100), new_box)
+    assert profile.command_ticks(reversed_command) == (247, 206)
+    worker._follow_tilt_cycle(link)
+    assert port.writes[-1][0] == "HOLD" and port.goal is None and not port.applied
+    assert len([w for w in port.writes if w[0] == "SET_TICKS"]) == int(pending)
+    assert profile.command_ticks(worker.controller.snapshot()) == (247, 205)
+    link.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["clear", "loss", "target_lost", "expired", "preview_loss", "preview_delay", "already_sent"],
+)
+def test_tilt_write_rechecks_authorization_at_dispatch(monkeypatch, change):
+    from tools import vision_motors
+
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    profile = MotorProfile(tilt_rate=2, tilt_only=True)
+    port = TiltStepPort((247, 205), clock)
+    link = TicksLink(port, profile, clock=clock, sleep=clock.sleep)
+    link.connect()
+    worker = MotorWorker("fake", profile)
+    worker.ticks = link.request("ARM")
+    worker.session = source(model=None)
+    worker.controller = profile.controller(worker.ticks)
+    for _ in range(12):
+        clock.sleep(0.05)
+        worker.controller.update(clock(), (100, 100), (35, 10, 55, 20))
+    worker.session.metrics.last_display = clock()
+    write = link._write
+    live_preview = vision_motors._live_preview
+
+    def preview(session):
+        if link.sequence > 1:
+            if change == "preview_loss":
+                worker.controller.hold()
+            elif change == "preview_delay":
+                clock.sleep(0.11)
+        return live_preview(session)
+
+    def interleave(line, **kwargs):
+        if not line.startswith("SET_TICKS"):
+            return write(line, **kwargs)
+        if change == "already_sent":
+            sent = write(line, **kwargs)
+            worker.stop()
+            return sent
+        if change == "clear":
+            worker.stop()
+        elif change == "loss":
+            worker.controller.hold()
+        elif change == "target_lost":
+            worker.session.manual_target_lost = True
+        elif change == "expired":
+            clock.sleep(0.11)
+        return write(line, **kwargs)
+
+    monkeypatch.setattr(link, "_write", interleave)
+    monkeypatch.setattr(vision_motors, "_live_preview", preview)
+    worker._follow_tilt_cycle(link)
+    assert (
+        port.writes[-1][0]
+        == {
+            "clear": "ARM",
+            "loss": "HOLD",
+            "target_lost": "HOLD",
+            "expired": "HOLD",
+            "preview_loss": "HOLD",
+            "preview_delay": "HOLD",
+            "already_sent": "SET_TICKS",
+        }[change]
+    )
+    link.close()
+    moves = [w[3:] for w in port.writes if w[0] == "SET_TICKS"]
+    assert moves == ([["247", "206"]] if change == "already_sent" else [])
+    assert port.writes[-1][0] == "DISARM" and port.closed and port.goal is None
+
+
+@pytest.mark.parametrize("change", ["none", "stop", "loss", "expired", "new_target"])
+def test_two_axis_write_rechecks_latest_observation_and_stop(monkeypatch, change):
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    profile = MotorProfile()
+    port = Port((247, 205))
+    link = TicksLink(port, profile, clock=clock, sleep=clock.sleep)
+    link.connect()
+    worker = MotorWorker("fake", profile)
+    worker.ticks = link.request("ARM")
+    worker.session = source()
+    worker.controller = profile.controller(worker.ticks)
+    for _ in range(8):
+        clock.sleep(0.04)
+        worker.controller.update(clock(), (100, 100), (65, 10, 85, 20))
+    assert worker.controller.snapshot().state == "TRACK"
+    write = link._write
+
+    def interleave(line, **kwargs):
+        if line.startswith("SET_TICKS"):
+            if change == "stop":
+                worker.stop()
+            elif change == "loss":
+                worker.controller.hold()
+            elif change == "expired":
+                clock.sleep(0.11)
+            elif change == "new_target":
+                clock.sleep(0.05)
+                worker.controller.update(clock(), (100, 100), (15, 70, 35, 90))
+        return write(line, **kwargs)
+
+    monkeypatch.setattr(link, "_write", interleave)
+    worker._follow_both_cycle(link)
+    action = {"none": "SET_TICKS", "stop": "ARM"}.get(change, "HOLD")
+    assert port.writes[-1][0] == action
+    assert len([w for w in port.writes if w[0] == "SET_TICKS"]) == (change == "none")
+    if change == "none":
+        assert port.writes[-1][3] != "247" and port.writes[-1][4] != "205"
+    link.close()
 
 
 def test_stale_observation_loss_and_stop_remain_hold_with_delay_metrics():
@@ -236,15 +559,18 @@ def test_timeout_and_late_ack_allow_only_disarm_with_fixed_deadline():
     assert [w[0] for w in port.writes] == ["HELLO", "ARM", "SET_TICKS", "DISARM"]
 
 
-def source(*, video=None, model="local.pt", processed=1):
+def source(*, video=None, model="local.pt", processed=1, displayed=1):
     return SimpleNamespace(
         video_path=video,
         model_path=model,
+        manual_displayed_at=None,
+        manual_target_lost=False,
         stop=threading.Event(),
         metrics=SimpleNamespace(
             snapshot=lambda: {"counts": {"process": processed}},
             delay_hold=lambda: None,
             settings={},
+            last_display=time.monotonic() if displayed else None,
         ),
         pan_tilt=MotorProfile().controller((208, 205)),
     )
@@ -255,10 +581,168 @@ def test_only_warmed_live_yolo_source_can_arm(kwargs):
     worker = MotorWorker("unused", MotorProfile())
     worker.state = "READY"
     session = source(**kwargs)
-    assert not can_arm(session)
+    assert not can_arm(session, worker.profile)
     with pytest.raises(ValueError):
         worker.arm(session)
     assert not worker.alive()
+
+
+def test_yolo_arm_waits_for_first_processing_metric():
+    session = source()
+    session.metrics.snapshot = lambda: {"counts": {}}
+    assert not can_arm(session, MotorProfile())
+
+
+@pytest.mark.parametrize("kwargs", [{"video": "clip.avi"}, {"displayed": 0}])
+def test_keyboard_arm_requires_displayed_live_camera(kwargs):
+    assert not can_arm(source(model=None, **kwargs), MotorProfile(tilt_rate=2, manual_tilt=True))
+
+
+def test_manual_live_box_only_enables_tilt_auto(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    profile = MotorProfile(tilt_rate=2, tilt_only=True)
+    session = source(model=None)
+    assert not can_arm(session, profile)
+    session.manual_displayed_at = clock()
+    assert can_arm(session, profile)
+    assert not can_arm(session, MotorProfile())
+    session.manual_target_lost = True
+    assert not can_arm(session, profile)
+    assert can_arm(session, MotorProfile(tilt_rate=2, manual_tilt=True))
+    session.manual_target_lost = False
+    worker = MotorWorker("fake", profile)
+    worker.state = "READY"
+    worker.stop()
+    with pytest.raises(ValueError):
+        worker.arm(session)
+    session.video_path = "clip.mp4"
+    assert not can_arm(session, profile)
+    session.video_path = None
+    clock.sleep(0.51)
+    assert not can_arm(session, profile)
+
+
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("auto_direction", [-1, 1])
+def test_manual_worker_jogs_only_tilt_one_tick_at_a_time(monkeypatch, stale, auto_direction):
+    class SteppingPort(Port):
+        goal = None
+        apply_at = 0.0
+
+        def write(self, data):
+            action, *fields = data.decode().strip().split(",")
+            if action == "HOLD" and self.goal is not None:
+                if clock() >= self.apply_at:
+                    self.ticks = self.goal
+                self.goal = None
+            sent = super().write(data)
+            if action == "SET_TICKS":
+                self.goal = tuple(map(int, fields[-2:]))
+                self.apply_at = clock() + 0.05
+                step_times.append(clock())
+            return sent
+
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    monkeypatch.setattr(
+        "tools.vision_motors.TicksLink",
+        lambda port, profile: TicksLink(port, profile, clock=clock, sleep=clock.sleep),
+    )
+    profile = MotorProfile(200, 201, auto_direction, 2, manual_tilt=True)
+    port, session = SteppingPort((247, 200)), source(model=None)
+    worker = MotorWorker("fake", profile, serial_factory=lambda _: port)
+    keys = [(0, -1), (0.15, 1), (0.25, -1), (0.60, -1), (0.85, 1), (0.95, -1)]
+    step_times = []
+    armed_at = None
+
+    def wait(timeout):
+        nonlocal armed_at
+        assert clock() < 5
+        if not stale or armed_at is None or clock() - armed_at < 1.12:
+            session.metrics.last_display = clock()
+        if worker.state == "READY":
+            worker.arm(session)
+        if worker.state == "ARMED":
+            if armed_at is None:
+                armed_at = clock()
+            elapsed = clock() - armed_at
+            if keys and elapsed >= keys[0][0]:
+                worker.jog(keys.pop(0)[1])
+            if elapsed > 1.2 and not stale:
+                session.stop.set()
+        clock.sleep(timeout)
+        return False
+
+    worker.stopping.wait = wait
+    worker._run()
+    assert worker.state == ("FAULT" if stale else "CLOSED") and port.closed
+    assert [w[3:] for w in port.writes if w[0] == "SET_TICKS"] == [
+        ["247", "201"],
+        ["247", "200"],
+    ]
+    assert step_times[1] - step_times[0] >= 0.7
+    assert port.writes[-1][0] == "DISARM"
+
+
+@pytest.mark.parametrize(
+    ("stage", "command", "error"),
+    [
+        ("idle", ("HOLD",), "확인된 틱"),
+        ("new step", ("SET_TICKS", 247, 201), "확인된 틱"),
+        ("settling", ("HOLD",), "한 틱 출력 확인 실패"),
+    ],
+)
+def test_manual_worker_rejects_unexpected_ticks(stage, command, error):
+    profile = MotorProfile(200, 210, 1, 2, manual_tilt=True)
+    worker = MotorWorker("fake", profile)
+    worker._jog_confirmed = (247, 200)
+    worker.session = source(model=None)
+    if stage == "new step":
+        worker._jog_keys.put_nowait((time.monotonic(), 1))
+    elif stage == "settling":
+        worker._jog_goal = (247, 201)
+    calls = []
+
+    def request(*args):
+        calls.append(args)
+        return (247, 208)
+
+    with pytest.raises(RuntimeError, match=error):
+        worker._manual_cycle(SimpleNamespace(request=request))
+    assert calls == [command]
+
+
+def test_stopping_camera_discards_a_dequeued_manual_step():
+    worker = MotorWorker("fake", MotorProfile(200, 210, 1, 2, manual_tilt=True))
+    worker._jog_confirmed = (247, 200)
+    worker.session = source(model=None)
+
+    def take_key():
+        worker.session.stop.set()
+        return time.monotonic(), 1
+
+    worker._jog_keys = SimpleNamespace(get_nowait=take_key)
+    worker._manual_cycle(SimpleNamespace(request=lambda *_: pytest.fail("sent after stop")))
+
+
+def test_manual_step_rechecks_display_freshness_after_dequeue(monkeypatch):
+    clock = Clock()
+    clock.now = 0.49
+    monkeypatch.setattr(time, "monotonic", clock)
+    worker = MotorWorker("fake", MotorProfile(200, 210, 1, 2, manual_tilt=True))
+    worker._jog_confirmed = (247, 200)
+    worker.session = source(model=None)
+    worker.session.metrics.last_display = 0.0
+
+    def delayed_key():
+        clock.now = 0.62
+        return 0.48, 1
+
+    worker._jog_keys = SimpleNamespace(get_nowait=delayed_key)
+    link = SimpleNamespace(request=lambda *_: pytest.fail("sent after the display went stale"))
+    with pytest.raises(RuntimeError, match="화면 갱신이 끊겨"):
+        worker._manual_cycle(link)
 
 
 @pytest.mark.parametrize("mode", ["connect_only", "arm_hold_stop", "stop_before_arm", "timeout"])

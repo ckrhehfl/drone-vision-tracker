@@ -210,7 +210,7 @@ void handle(char *line) {
   if (!calibrated()) { response("ERR", session, seq, "CALIBRATION_REQUIRED", true); return; }
   expire();
   if (count == 3 && !strcmp(fields[0], "ARM")) {
-    if (armed) { response("ERR", session, seq, "BAD_FORMAT", true); return; }
+    if (armed) { disarm(); response("ERR", session, seq, "BAD_FORMAT", true); return; }
     armed = true; hold(); lastMotion = millis();
     response("ACK", session, seq, "ARMED", true); return;
   }

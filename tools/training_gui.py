@@ -204,7 +204,9 @@ class TrainingWindow:
         fields.columnconfigure(1, weight=1)
         ttk.Label(fields, text="분할").grid(row=0, column=0, sticky="w")
         self.control(
-            ttk.Combobox(fields, textvariable=self.split, values=SPLITS, width=9, state="readonly"),
+            ttk.Spinbox(
+                fields, textvariable=self.split, values=SPLITS, width=9, state="readonly", wrap=True
+            ),
             "readonly",
         ).grid(row=1, column=0, padx=(0, 8))
         ttk.Label(fields, text="촬영 그룹 이름").grid(row=0, column=1, sticky="w")
@@ -277,11 +279,12 @@ class TrainingWindow:
         ):
             ttk.Label(train, text=label).grid(row=row * 2, sticky="w", pady=(12, 2))
             widget = (
-                ttk.Combobox(
+                ttk.Spinbox(
                     train,
                     textvariable=variable,
                     values=("cuda", "mps", "cpu", "auto"),
                     state="readonly",
+                    wrap=True,
                 )
                 if variable is self.device
                 else ttk.Entry(train, textvariable=variable)
