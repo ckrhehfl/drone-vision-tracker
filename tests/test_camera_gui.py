@@ -416,6 +416,33 @@ def test_camera_picker_disables_start_on_listing_error(monkeypatch, camera_contr
     assert app.status.get() == "카메라 목록을 읽지 못했습니다"
 
 
+def test_close_cancel_applies_camera_lookup_finished_during_save_prompt(camera_controls):
+    app = camera_controls
+    camera = {"id": "usb", "name": "Mock", "index": 0, "builtin": False, "kind": "USB"}
+    app.scanning_cameras = True
+    app.update_input_controls()
+
+    def cancel_close():
+        app.camera_results.put_nowait(([camera], None))
+        app.finish_camera_refresh()
+        return False
+
+    app.label_editor = SimpleNamespace(
+        window=SimpleNamespace(winfo_exists=lambda: True),
+        request_close=cancel_close,
+    )
+    app.close()
+    assert not app.closing
+    app.finish_camera_refresh()
+
+    assert app.cameras[app.camera.get()] == camera
+    assert not app.scanning_cameras
+    assert app.camera_select.cget("state") == "readonly"
+    assert app.refresh_button.cget("state") == "normal"
+    assert app.refresh_button.cget("text") == "↻ 새로고침"
+    assert app.start_button.cget("state") == "normal"
+
+
 def test_close_does_not_wait_for_camera_lookup_or_apply_its_late_result(camera_controls):
     app = camera_controls
     destroyed = []

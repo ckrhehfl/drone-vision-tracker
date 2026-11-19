@@ -1832,13 +1832,13 @@ class CameraGUI:
         results.put_nowait(result)
 
     def finish_camera_refresh(self):
+        if self.closing:
+            return
         try:
             devices, error = self.camera_results.get_nowait()
         except queue.Empty:
             return
         self.scanning_cameras = False
-        if self.closing:
-            return
         selected = self.cameras.get(self.camera.get(), {}).get("id")
         empty_label = "연결된 카메라 없음" if error is None else "카메라 목록 조회 실패"
         self.cameras = {}
@@ -2496,6 +2496,7 @@ class CameraGUI:
         else:
             if self.session is not None:
                 self.session.finish()
+            self.scanning_cameras = False
             self.root.destroy()
 
 
