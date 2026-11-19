@@ -48,17 +48,24 @@ int main(int argc, char **argv) {
     if (mode == "diag-off") registers_[9] = 16;
     if (mode == "diag-range") { registers_[12] = 340 & 255; registers_[13] = 340 >> 8; }
     if (mode == "diag-clock") registers_[0xFE] = 30;
+    if (mode == "diag-restart") registers_[0] = 0xA0;
+    if (mode == "diag-normal-alt") registers_[0] = 0x21;
     if (mode == "diag-i2c") online = false;
     const std::vector<byte> before(registers_, registers_ + 256);
     setup(); send("HELLO,1,ABCDEF12");
     bool wasReady = ready;
+    if (mode == "diag-restart") {
+      assert(!wasReady && Serial.output.find("READY,1,ABCDEF12,LOCKED") != std::string::npos);
+    }
+    if (mode == "diag-normal-alt") assert(wasReady);
     send("DIAG,ABCDEF12,1");
     assert(!armed && ready == wasReady && pwmWrites == 0);
     assert(std::vector<byte>(registers_, registers_ + 256) == before);
     if (mode == "diag-i2c") assert(Serial.output.find("ERR,ABCDEF12,1,DIAG_READ_FAILED") != std::string::npos);
     else {
-      std::string expected = "DIAG,ABCDEF12,1," + std::to_string(VISION_HARDWARE_ENABLED == 1) + ",32," +
-        std::to_string(registers_[1]) + "," + std::to_string(registers_[0xFE]) + ",0," +
+      std::string expected = "DIAG,ABCDEF12,1," + std::to_string(VISION_HARDWARE_ENABLED == 1) + "," +
+        std::to_string(registers_[0]) + "," + std::to_string(registers_[1]) + "," +
+        std::to_string(registers_[0xFE]) + ",0," +
         std::to_string(registers_[8] | (uint16_t(registers_[9]) << 8)) + ",0," +
         std::to_string(registers_[12] | (uint16_t(registers_[13]) << 8));
       assert(Serial.output.find(expected + "\n") != std::string::npos);

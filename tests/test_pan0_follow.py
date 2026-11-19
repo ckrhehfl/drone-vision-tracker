@@ -482,7 +482,10 @@ def test_non_ascii_disarm_still_cleans_video_and_closes_port(tmp_path, monkeypat
     assert [w[0] for w in port.writes] == ["HELLO", "ARM", "SET", "DISARM", "DISARM"]
 
 
-@pytest.mark.parametrize("case", ["old_capture", "stale_after_arm", "error", "timeout", "stop"])
+@pytest.mark.parametrize(
+    "case",
+    ["old_capture", "stale_after_arm", "error", "timeout", "stop", "late_arm", "stop_after_arm"],
+)
 def test_video_warmup_precedes_arm_and_preserves_first_result(case, monkeypatch):
     import queue
     import threading
@@ -534,7 +537,9 @@ def test_video_warmup_precedes_arm_and_preserves_first_result(case, monkeypatch)
         def arm(self):
             assert "ready" in events
             events.append("ARM")
-            clock.sleep(0.2)
+            clock.sleep(0.8 if case == "late_arm" else 0.2)
+            if case == "stop_after_arm":
+                sessions[0].stop.set()
 
         def request(self, command, *args):
             events.append(command)
@@ -547,6 +552,8 @@ def test_video_warmup_precedes_arm_and_preserves_first_result(case, monkeypatch)
         "error": "model warmup failed",
         "timeout": "첫 영상 처리 결과",
         "stop": "첫 영상 처리 결과",
+        "late_arm": "ARM 응답 뒤",
+        "stop_after_arm": "ARM 응답 뒤",
     }.get(case)
     with pytest.raises(RuntimeError, match=expected) if expected else nullcontext():
         run(
@@ -560,6 +567,8 @@ def test_video_warmup_precedes_arm_and_preserves_first_result(case, monkeypatch)
         )
     if case in {"error", "timeout", "stop"}:
         assert events == ["DISARM"] and not acknowledgements
+    elif case in {"late_arm", "stop_after_arm"}:
+        assert events[-2:] == ["ARM", "DISARM"] and not acknowledgements and not commands
     else:
         assert events.index("ready") < events.index("ARM") < events.index("SET")
         original = next(item[1] for item in events if isinstance(item, tuple))

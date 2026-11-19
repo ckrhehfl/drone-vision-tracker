@@ -71,6 +71,8 @@ def firmware(tmp_path_factory):
     [
         "retained",
         "retained-start",
+        "restart-retained",
+        "restart-off",
         "unreadable",
         "other-active",
         "equal-counters",

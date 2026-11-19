@@ -28,7 +28,7 @@ bool writeReg(byte reg, byte value) {
 bool configured(byte requiredMode) {
   byte mode1, mode2, prescale;
   return readReg(0, mode1) && readReg(1, mode2) && readReg(0xFE, prescale) &&
-         (mode1 & 0x70) == 0x20 && mode2 == requiredMode && prescale == 121;
+         (mode1 & 0xF0) == 0x20 && mode2 == requiredMode && prescale == 121;
 }
 bool readChannel(byte channel, uint16_t &on, uint16_t &off) {
   byte values[4];

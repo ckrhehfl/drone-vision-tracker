@@ -53,7 +53,7 @@ bool writeReg(byte reg, byte value) {
 bool configured() {
   byte mode, mode2, prescale;
   return readReg(0, mode) && readReg(1, mode2) && readReg(0xFE, prescale) &&
-         (mode & 0x70) == 0x20 && mode2 == 0x04 && prescale == 121;
+         (mode & 0xF0) == 0x20 && mode2 == 0x04 && prescale == 121;
 }
 bool readChannel(byte channel, uint16_t &on, uint16_t &off) {
   byte values[4];
@@ -97,7 +97,7 @@ void setup() {
   }
   if (!configured()) {
     byte mode, mode2;
-    if (!readReg(0, mode) || !readReg(1, mode2) || (mode & 0x40) || mode2 != 0x04) return;
+    if (!readReg(0, mode) || !readReg(1, mode2) || (mode & 0xC0) || mode2 != 0x04) return;
     for (byte channel = 0; channel < 16; ++channel) {
       if (!readChannel(channel, on, off) || !inactive(on, off)) return;
     }

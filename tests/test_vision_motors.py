@@ -1,5 +1,6 @@
 """No real ports: check command mapping, framing, freshness and worker lifecycle."""
 
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -497,6 +498,7 @@ def test_old_or_unknown_firmware_refuses_before_arm():
         ("0,32,4,121,0,208,0,205", "비활성 빌드"),
         ("1,32,4,30,0,208,0,205", "클록"),
         ("1,0,4,121,0,208,0,205", "클록"),
+        ("1,160,4,121,0,208,0,205", "PWM 재시작 대기"),
         ("1,32,0,121,0,208,0,205", "출력 모드"),
         ("1,32,4,121,0,208,0,340", "인계 조건 밖"),
         ("1,32,4,121,0,4301,0,205", "인계 조건 밖"),
@@ -590,6 +592,7 @@ def source(*, video=None, model="local.pt", processed=1, displayed=1):
         manual_displayed_at=None,
         manual_target_lost=False,
         stop=threading.Event(),
+        serial_write_lock=threading.Lock(),
         metrics=SimpleNamespace(
             snapshot=lambda: {"counts": {"process": processed}},
             delay_hold=lambda: None,
@@ -799,6 +802,80 @@ def test_manual_key_dispatch_drops_cancelled_or_stale_motion(monkeypatch, change
     assert worker._jog_goal is None
     link.close()
     assert port.closed and [message[0] for message in port.writes] == ["HELLO", "ARM", "DISARM"]
+
+
+def test_camera_read_failure_and_manual_serial_handoff_share_stop_order(monkeypatch):
+    from tools.camera_gui import CameraSession
+
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    with monkeypatch.context() as setup:
+        setup.setattr(threading.Thread, "start", lambda thread: None)
+        session = CameraSession(0, None, 0.65, "cpu")
+    capture = SimpleNamespace(
+        isOpened=lambda: True, set=lambda *_: None, read=lambda: (False, None), release=lambda: None
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        SimpleNamespace(
+            CAP_ANY=0,
+            CAP_AVFOUNDATION=1,
+            CAP_PROP_FRAME_WIDTH=2,
+            CAP_PROP_FRAME_HEIGHT=3,
+            CAP_PROP_FPS=4,
+            VideoCapture=lambda *_: capture,
+        ),
+    )
+    write_started, stop_waiting = threading.Event(), threading.Event()
+
+    def read_failure():
+        if write_started.wait(2):
+            session.capture()
+
+    camera = threading.Thread(target=read_failure, daemon=True)
+    lock = session.serial_write_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread() is camera:
+                stop_waiting.set()
+            lock.acquire()
+
+        def __exit__(self, *_):
+            lock.release()
+
+    session.serial_write_lock = ObservedLock()
+    profile = MotorProfile(200, 210, 1, 2, manual_tilt=True)
+    port = Port((247, 205))
+    link = TicksLink(port, profile, clock=clock, sleep=clock.sleep)
+    link.connect()
+    worker = MotorWorker("fake", profile)
+    worker.ticks = worker._jog_confirmed = link.request("ARM")
+    worker.session = session
+    session.metrics.last_display = clock()
+    worker._jog_keys.put_nowait((clock(), 1))
+    write = port.write
+
+    def observe_write(data):
+        if data.startswith(b"SET_TICKS"):
+            write_started.set()
+            assert stop_waiting.wait(2) and not session.stop.is_set()
+        return write(data)
+
+    monkeypatch.setattr(port, "write", observe_write)
+    camera.start()
+    try:
+        worker._manual_cycle(link)
+        camera.join(timeout=2)
+        assert not camera.is_alive() and session.stop.is_set()
+        assert "카메라 영상이 끊겼습니다" in session.errors.get_nowait()
+        worker._jog_keys.put_nowait((clock(), 1))
+        worker._manual_cycle(link)
+    finally:
+        link.close()
+    assert port.closed
+    assert [row[0] for row in port.writes] == ["HELLO", "ARM", "SET_TICKS", "DISARM"]
 
 
 @pytest.mark.parametrize("mode", ["connect_only", "arm_hold_stop", "stop_before_arm", "timeout"])

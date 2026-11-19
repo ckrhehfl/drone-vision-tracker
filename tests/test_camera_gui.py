@@ -478,6 +478,7 @@ def test_capture_resolves_selected_id_and_rejects_connection_changes(monkeypatch
     session.metrics = SessionMetrics()
     session.camera, session.resolution = selected, (1920, 1080)
     session.stop, session.errors = threading.Event(), queue.Queue()
+    session.serial_write_lock = threading.Lock()
     session.capture()
     assert session.stop.is_set()
     error = session.errors.get_nowait()
@@ -644,6 +645,7 @@ def test_camera_failure_releases_device(monkeypatch):
     session.stop = threading.Event()
     session.errors = queue.Queue()
     session.frames = queue.Queue(maxsize=1)
+    session.serial_write_lock = threading.Lock()
     session.capture()
     assert session.stop.is_set()
     assert "영상이 끊겼습니다" in session.errors.get_nowait()
@@ -1828,6 +1830,7 @@ def test_opt_in_collection_dialog_and_finish_on_exit(monkeypatch, camera_control
     session.metrics = SessionMetrics()
     session.metrics.capture(session.metrics.started + 0.01, (100, 100))
     session.alive = lambda: False
+    session.serial_write_lock = threading.Lock()
     app.session = session
 
     def collector(path, metrics):
@@ -2048,6 +2051,7 @@ def test_yolo_unavailable_gpu_stops_before_model_loading(monkeypatch, device):
     )
     session = CameraSession.__new__(CameraSession)
     session.model_path, session.device = "trusted-local.pt", device
+    session.serial_write_lock = threading.Lock()
     session.metrics, session.errors, session.stop = (
         SessionMetrics(),
         queue.Queue(),
@@ -2787,6 +2791,7 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
 
 def test_video_display_ack_wakes_immediately_and_stale_ack_cannot_skip_frame(monkeypatch, tmp_path):
     session = CameraSession.__new__(CameraSession)
+    session.serial_write_lock = threading.Lock()
     session.video_path, model = tmp_path / "video.mp4", tmp_path / "local.pt"
     session.video_path.write_bytes(b"synthetic video")
     model.write_bytes(b"synthetic weights")

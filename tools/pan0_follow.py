@@ -226,6 +226,8 @@ def run(
                 raise RuntimeError("시험 시작 전에 첫 영상 처리 결과를 기다리는 시간이 끝났습니다.")
         if link is not None:
             link.arm()
+            if clock() - start >= duration or (session is not None and session.stop.is_set()):
+                raise RuntimeError("ARM 응답 뒤 시험 기한이 지났거나 영상 입력이 종료됐습니다.")
             link.request("SET", profile.centidegrees(profile.start), 0)
         previous_state = None
         while clock() - start < duration:

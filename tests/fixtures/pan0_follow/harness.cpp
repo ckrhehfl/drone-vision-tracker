@@ -48,6 +48,16 @@ int main(int argc, char **argv) {
     command("DISARM,ABCDEF12,3"); assert(!armed && writes.empty() && registers_[12] == 205);
     return 0;
   }
+  if (mode == "restart-retained" || mode == "restart-off") {
+    registers_[0] = 0xA1; registers_[0xFE] = 121;
+    if (mode == "restart-retained") {
+      registers_[8] = registers_[12] = 205;
+      registers_[9] = registers_[13] = 0;
+    }
+    begin(); command("ARM,ABCDEF12,1");
+    assert(!ready && !armed && outputTicks == -1 && writes.empty());
+    return 0;
+  }
   if (mode == "retained-disabled") {
     registers_[8] = 205; registers_[9] = 0;
     registers_[0] = 0x21; registers_[0xFE] = 121;

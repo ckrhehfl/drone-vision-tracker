@@ -558,6 +558,7 @@ class CameraSession:
         )
         self.collector = None
         self.collection_lock = threading.Lock()
+        self.serial_write_lock = threading.Lock()
         self.stop = threading.Event()
         self.frames = queue.Queue(maxsize=1)
         self.previews = queue.Queue(maxsize=1)
@@ -572,9 +573,10 @@ class CameraSession:
             thread.start()
 
     def request_stop(self):
+        with self.serial_write_lock:
+            self.stop.set()
         if self.pan_tilt is not None:
             self.pan_tilt.stop()
-        self.stop.set()
 
     def capture(self):
         if self.metrics.settings.get("source_type") == "video_test":

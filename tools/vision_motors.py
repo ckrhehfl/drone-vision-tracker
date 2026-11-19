@@ -187,6 +187,8 @@ class TicksLink:
                 reasons.append("하드웨어 비활성 빌드")
             if mode1 & 0x70 != 0x20 or prescale != 121:
                 reasons.append("드라이버 클록 설정 불일치")
+            if mode1 & 0x80:
+                reasons.append("드라이버 PWM 재시작 대기")
             if mode2 == 12:
                 reasons.append("이전 구동/불확실한 쓰기 표식 잔류")
             elif mode2 != 4:
@@ -278,6 +280,7 @@ class MotorWorker:
         self._jog_check_at = self._jog_ready_at = 0.0
         self._tilt_step = None
         self._tilt_check_at = self._tilt_ready_at = 0.0
+        self._both_target = None
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -312,19 +315,26 @@ class MotorWorker:
         return self.thread.is_alive()
 
     def _write_if_active(self, write):
-        with self._write_lock:
+        with self.session.serial_write_lock, self._write_lock:
             return not self.session.stop.is_set() and not self.stopping.is_set() and write()
 
     def _follow_both_cycle(self, link):
         command = self.controller.snapshot()
         if command.state == "TRACK":
             target = self.profile.command_ticks(command)
+            previous_target = self._both_target or self.ticks
 
             def same_direction(latest, pan_error, tilt_error):
+                # After a SET ACK, each output may have stepped toward the previous target.
                 return latest == command and all(
-                    goal == output or (output - goal) * error > 0
-                    for goal, output, error in zip(
-                        target, self.ticks, (pan_error, tilt_error), strict=True
+                    (goal == output == previous)
+                    or (
+                        error != 0
+                        and (output - goal) * error >= 0
+                        and (previous - goal) * error >= 0
+                    )
+                    for goal, output, previous, error in zip(
+                        target, self.ticks, previous_target, (pan_error, tilt_error), strict=True
                     )
                 )
 
@@ -337,10 +347,12 @@ class MotorWorker:
             )
             if ticks is not None:
                 self.ticks = ticks
+                self._both_target = target
                 return
         ticks = link.request("HOLD", dispatch=self._write_if_active)
         if ticks is not None:
             self.ticks = ticks
+            self._both_target = None
             self.controller.hold_at_output(*(nominal_angle(t) for t in ticks))
 
     def _tilt_target(self, tilt, command, tilt_adjustment):

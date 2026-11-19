@@ -3,7 +3,9 @@
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,8 +60,10 @@ def vision_firmware(tmp_path_factory):
         "diag-off",
         "diag-range",
         "diag-clock",
+        "diag-restart",
         "diag-i2c",
         "diag-normal",
+        "diag-normal-alt",
         "diag-armed",
         "hold",
         "watchdog",
@@ -95,8 +99,11 @@ def test_default_vision_build_cannot_arm(vision_firmware):
     subprocess.run([str(binaries[0]), "diag-normal"], check=True, env=env)
 
 
-def test_controller_to_real_vision_sketch_tracks_both_axes_and_holds(vision_firmware):
-    from tools.vision_motors import MotorProfile, TicksLink
+@pytest.mark.parametrize("center_after_ack", [False, True])
+def test_controller_to_real_vision_sketch_tracks_both_axes_and_holds(
+    vision_firmware, center_after_ack
+):
+    from tools.vision_motors import MotorProfile, MotorWorker, TicksLink
 
     binaries, env = vision_firmware
     process = subprocess.Popen(
@@ -112,6 +119,7 @@ def test_controller_to_real_vision_sketch_tracks_both_axes_and_holds(vision_firm
     class Device:
         def __init__(self):
             self.buffer = bytearray(self.exchange("@POLL"))
+            self.commands = []
 
         def exchange(self, line):
             process.stdin.write(line + "\n")
@@ -124,6 +132,7 @@ def test_controller_to_real_vision_sketch_tracks_both_axes_and_holds(vision_firm
             self.buffer.clear()
 
         def write(self, data):
+            self.commands.append(data.split(b",", 1)[0])
             self.buffer.extend(self.exchange(data.decode().strip()))
             return len(data)
 
@@ -153,6 +162,32 @@ def test_controller_to_real_vision_sketch_tracks_both_axes_and_holds(vision_firm
         controller = profile.controller(link.ticks)
         controller._clock = clock
         link.request("ARM")
+        if center_after_ack:
+            worker = MotorWorker("fake", profile)
+            worker.controller = controller
+            worker.ticks = link.ticks
+            worker.session = SimpleNamespace(
+                stop=threading.Event(), serial_write_lock=threading.Lock()
+            )
+            for _ in range(3):
+                clock.sleep(0.045)
+                controller.update(clock(), (100, 100), (70, 40, 90, 60))
+            assert profile.command_ticks(controller.snapshot()) == (207, 205)
+            worker._follow_both_cycle(link)
+            assert device.commands[-1] == b"SET_TICKS" and worker.ticks == (208, 205)
+            device.exchange("@TICK,50")
+            clock.sleep(0.04)
+            controller.update(clock(), (100, 100), (30, 40, 50, 60))
+            clock.sleep(0.01)
+            controller.update(clock(), (100, 100), (40, 40, 60, 60))
+            assert profile.command_ticks(controller.snapshot()) == (208, 205)
+            worker._follow_both_cycle(link)
+            assert device.commands[-1] == b"HOLD" and worker.ticks == (207, 205)
+            assert profile.command_ticks(controller.snapshot()) == (207, 205)
+            device.exchange("@TICK,100")
+            assert link.request("HOLD") == (207, 205)
+            return
+
         for _ in range(12):
             clock.sleep(0.05)
             command = controller.update(clock(), (100, 100), (70, 20, 80, 30))
