@@ -158,8 +158,25 @@ int main(int argc, char **argv) {
     registers_[8] = 206; command("HOLD,ABCDEF12,3"); assert(!ready && !armed);
   } else if (mode == "bad-set") {
     for (const char *value : {"-1", "18001", "9000.0", "NaN", "", "9000,1", "9000,0,x"}) {
-      command(std::string("SET,ABCDEF12,3,") + value + ",0"); assert(!armed);
+      assert(armed);
+      auto seq = previousSequence + 1;
+      auto count = writes.size();
+      Serial.output.clear();
+      command("SET,ABCDEF12," + std::to_string(seq) + "," + value + ",0");
+      assert(!armed && targetTicks == 205 && outputTicks == 205 && writes.size() == count);
+      assert(Serial.output.find("BAD_FORMAT") != std::string::npos);
+      command("ARM,ABCDEF12," + std::to_string(seq + 1));
     }
+  } else if (mode == "angle-boundaries") {
+    auto count = writes.size();
+    command("SET,ABCDEF12,3,8640,0"); assert(armed && targetTicks == 210);
+    command("SET,ABCDEF12,4,8639,0"); assert(!armed && targetTicks == 205);
+    assert(Serial.output.find("ERR,ABCDEF12,4,OUT_OF_RANGE") != std::string::npos);
+    command("ARM,ABCDEF12,5"); assert(armed);
+    command("SET,ABCDEF12,6,9360,0"); assert(armed && targetTicks == 200);
+    command("SET,ABCDEF12,7,9361,0"); assert(!armed && targetTicks == 205);
+    assert(Serial.output.find("ERR,ABCDEF12,7,OUT_OF_RANGE") != std::string::npos);
+    fakeTime += 50; loop(); assert(outputTicks == 205 && writes.size() == count);
   } else if (mode == "overflow") {
     command(std::string(97, 'X')); assert(!armed && outputTicks == 205);
     assert(Serial.output.find("LINE_TOO_LONG") != std::string::npos);

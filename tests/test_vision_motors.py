@@ -270,7 +270,10 @@ def test_tilt_only_does_not_chase_jitter_or_a_lost_observation(monkeypatch, loss
         align_tilt_output=lambda _: None,
     )
     worker.controller.dispatch_tracking = (
-        lambda accepts, write: accepts(*worker.controller.tilt_snapshot()) and write()
+        lambda accepts, write: accepts(
+            worker.controller.tilt_snapshot()[0], 0, worker.controller.tilt_snapshot()[1]
+        )
+        and write()
     )
     worker._follow_tilt_cycle(link)
     assert port.writes[-1][3:] == ["247", "206"]
@@ -402,7 +405,9 @@ def test_tilt_write_rechecks_authorization_at_dispatch(monkeypatch, change):
     assert port.writes[-1][0] == "DISARM" and port.closed and port.goal is None
 
 
-@pytest.mark.parametrize("change", ["none", "stop", "loss", "expired", "new_target"])
+@pytest.mark.parametrize(
+    "change", ["none", "stop", "loss", "expired", "new_target", "opposite", "center"]
+)
 def test_two_axis_write_rechecks_latest_observation_and_stop(monkeypatch, change):
     clock = Clock()
     monkeypatch.setattr(time, "monotonic", clock)
@@ -418,6 +423,10 @@ def test_two_axis_write_rechecks_latest_observation_and_stop(monkeypatch, change
         clock.sleep(0.04)
         worker.controller.update(clock(), (100, 100), (65, 10, 85, 20))
     assert worker.controller.snapshot().state == "TRACK"
+    returning = (40, 40, 60, 60) if change == "center" else (15, 70, 35, 90)
+    if change in {"center", "opposite"}:
+        clock.sleep(0.01)
+        worker.controller.update(clock(), (100, 100), returning)
     write = link._write
 
     def interleave(line, **kwargs):
@@ -440,6 +449,21 @@ def test_two_axis_write_rechecks_latest_observation_and_stop(monkeypatch, change
     assert len([w for w in port.writes if w[0] == "SET_TICKS"]) == (change == "none")
     if change == "none":
         assert port.writes[-1][3] != "247" and port.writes[-1][4] != "205"
+    if action == "HOLD":
+        assert worker.controller.snapshot() == PanTiltCommand(
+            nominal_angle(247), nominal_angle(205)
+        )
+        monkeypatch.setattr(link, "_write", write)
+        for _ in range(12):
+            clock.sleep(0.04)
+            worker.controller.update(clock(), (100, 100), returning)
+        worker._follow_both_cycle(link)
+        assert port.writes[-1][0] == "SET_TICKS"
+        pan, tilt = map(int, port.writes[-1][3:])
+        if change == "center":
+            assert (pan, tilt) == (247, 205)
+        else:
+            assert pan > 247 and tilt < 205
     link.close()
 
 
@@ -704,7 +728,8 @@ def test_manual_worker_rejects_unexpected_ticks(stage, command, error):
         worker._jog_goal = (247, 201)
     calls = []
 
-    def request(*args):
+    def request(*args, dispatch=None):
+        assert dispatch is None or dispatch(lambda: True)
         calls.append(args)
         return (247, 208)
 
@@ -743,6 +768,37 @@ def test_manual_step_rechecks_display_freshness_after_dequeue(monkeypatch):
     link = SimpleNamespace(request=lambda *_: pytest.fail("sent after the display went stale"))
     with pytest.raises(RuntimeError, match="화면 갱신이 끊겨"):
         worker._manual_cycle(link)
+
+
+@pytest.mark.parametrize("change", ["stop", "preview_expired", "key_expired"])
+def test_manual_key_dispatch_drops_cancelled_or_stale_motion(monkeypatch, change):
+    clock = Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    profile = MotorProfile(200, 210, 1, 2, manual_tilt=True)
+    port = Port((247, 205))
+    link = TicksLink(port, profile, clock=clock, sleep=clock.sleep)
+    link.connect()
+    worker = MotorWorker("fake", profile)
+    worker.ticks = worker._jog_confirmed = link.request("ARM")
+    worker.session = source(model=None)
+    worker._jog_keys.put_nowait((clock(), 1))
+    if change == "preview_expired":
+        worker.session.metrics.last_display = clock() - 0.49
+    write = link._write
+
+    def interleave(line, **kwargs):
+        if line.startswith("SET_TICKS"):
+            if change == "stop":
+                worker.stop()
+            else:
+                clock.sleep(0.02 if change == "preview_expired" else 0.16)
+        return write(line, **kwargs)
+
+    monkeypatch.setattr(link, "_write", interleave)
+    worker._manual_cycle(link)
+    assert worker._jog_goal is None
+    link.close()
+    assert port.closed and [message[0] for message in port.writes] == ["HELLO", "ARM", "DISARM"]
 
 
 @pytest.mark.parametrize("mode", ["connect_only", "arm_hold_stop", "stop_before_arm", "timeout"])

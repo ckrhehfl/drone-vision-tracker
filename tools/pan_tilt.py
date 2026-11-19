@@ -88,7 +88,7 @@ class PanTiltController:
         self._last_frame_at = None
         self._previous_observation_at = None
         self._shape = None
-        self._tilt_error = 0.0
+        self._pan_error = self._tilt_error = 0.0
 
     @classmethod
     def simulated(cls, *, clock=None, on_delay_hold=None):
@@ -100,9 +100,19 @@ class PanTiltController:
             on_delay_hold=on_delay_hold,
         )
 
-    def hold(self):
+    def hold(self, *, publish=None):
         with self._lock:
-            return self._hold()
+            command = self._hold()
+            if publish is not None:
+                publish()
+            return command
+
+    def hold_at_output(self, pan_deg, tilt_deg):
+        with self._lock:
+            latest = self.transport.latest
+            if (latest.pan_deg, latest.tilt_deg) != (pan_deg, tilt_deg):
+                self._hold()
+                self.transport.send(PanTiltCommand(pan_deg, tilt_deg))
 
     def align_tilt_output(self, tilt_deg):
         """Use an acknowledged tilt command as the starting point for the next observation."""
@@ -126,7 +136,7 @@ class PanTiltController:
 
     def _hold(self, *, delayed=False):
         self._previous_observation_at = None
-        self._tilt_error = 0.0
+        self._pan_error = self._tilt_error = 0.0
         last = self.transport.latest
         if last.state == "HOLD":
             return last
@@ -166,10 +176,17 @@ class PanTiltController:
     def dispatch_tracking(self, accepts, write):
         """Order the serial write with observation updates. The ACK is read outside this lock."""
         with self._lock:
-            if not accepts(self.transport.latest, self.tilt.direction * self._tilt_error):
-                return False
             self._expire(self._clock() if self._clock is not None else None)
-            return self.transport.latest.state == "TRACK" and write()
+            command = self.transport.latest
+            return (
+                command.state == "TRACK"
+                and accepts(
+                    command,
+                    self.pan.direction * self._pan_error,
+                    self.tilt.direction * self._tilt_error,
+                )
+                and write()
+            )
 
     def update(self, captured, shape, box, *, now=None, received_at=None):
         """Use the observation timeline for motion and host dispatch time for resume."""
@@ -213,10 +230,9 @@ class PanTiltController:
         ex, ey = (x1 + x2) / width - 1, (y1 + y2) / height - 1
         last = self.transport.latest
         pan, pan_limited = last.pan_deg, False
+        self._pan_error = ex if abs(ex) > self.dead_zone else 0.0
         if self.track_pan:
-            pan, pan_limited = self.pan.step(
-                last.pan_deg, ex if abs(ex) > self.dead_zone else 0, dt
-            )
+            pan, pan_limited = self.pan.step(last.pan_deg, self._pan_error, dt)
         self._tilt_error = ey if abs(ey) > self.dead_zone else 0.0
         tilt, tilt_limited = self.tilt.step(last.tilt_deg, self._tilt_error, dt)
         return self.transport.send(PanTiltCommand(pan, tilt, "TRACK", pan_limited or tilt_limited))

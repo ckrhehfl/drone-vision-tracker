@@ -215,13 +215,15 @@ def run(
                 if error:
                     raise RuntimeError(error)
                 if session.stop.is_set() or clock() - start >= duration:
-                    return
+                    raise RuntimeError(
+                        "시험 시작 전에 첫 영상 처리 결과를 기다리는 시간이 끝났습니다."
+                    )
                 try:
                     pending_result = session.results.get_nowait()
                 except queue.Empty:
                     sleep(0.01)
             if session.stop.is_set() or clock() - start >= duration:
-                return
+                raise RuntimeError("시험 시작 전에 첫 영상 처리 결과를 기다리는 시간이 끝났습니다.")
         if link is not None:
             link.arm()
             link.request("SET", profile.centidegrees(profile.start), 0)
@@ -328,7 +330,9 @@ def main(argv=None):
             expected = (
                 f"PAN0 {profile.minimum}/{profile.start}/{profile.maximum} {profile.direction}"
             )
-            print("PAN0_TEST1 펌웨어 업로드·PCA 전원 재투입·기구 지지·시작 위치/방향을 확인하세요.")
+            print("PAN0_TEST1 펌웨어·기구 지지·시작 위치와 방향을 확인하세요.")
+            print("205틱 인계 시 PCA9685 논리전원을 유지하고 두 축 잔류 명령을 확인하세요.")
+            print("논리전원이 끊겼다면 docs/pan0-motor-test.md의 별도 인계 절차를 따르세요.")
             print("포트를 열면 Uno가 리셋됩니다. 이전 펌웨어가 설치돼 있으면 연결하지 마세요.")
             print("Ctrl+C는 DISARM 요청이며 물리적 비상정지가 아닙니다. 전원 차단을 준비하세요.")
             if input(f"0번만 시험하려면 '{expected}' 입력: ").strip() != expected:

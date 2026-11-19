@@ -1093,7 +1093,9 @@ def test_manual_worker_reacquires_after_leaving_frame(
     session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
     session.results = queue.Queue(maxsize=1)
     session.pan_tilt = SimpleNamespace(
-        update=lambda at, shape, box, **kwargs: motor_boxes.append(box), stop=lambda: None
+        update=lambda at, shape, box, **kwargs: motor_boxes.append(box),
+        hold=lambda *, publish: publish(),
+        stop=lambda: None,
     )
     session.selections.put((initial, original_box, selected, clock.now))
     remaining = iter(zip((10.1, 10.2, 13.0, 13.1, 13.2, 13.3, 13.4), frames, strict=True))
@@ -1686,6 +1688,43 @@ def test_manual_tracking_uses_frame_capture_time_for_motor_freshness(
     assert [command.state for _, command in commands] == ["HOLD", "TRACK", "HOLD", "HOLD"]
     assert commands[1][1].tilt_deg < commands[0][1].tilt_deg
     assert all(command.pan_deg == commands[0][1].pan_deg for _, command in commands)
+
+
+def test_manual_loss_and_serial_dispatch_publish_in_lock_order(monkeypatch):
+    from tools.pan_tilt import PanTiltController
+
+    session = CameraSession.__new__(CameraSession)
+    session.manual_target_lost = False
+    controller = session.pan_tilt = PanTiltController.simulated()
+    for captured in (0.0, 0.05):
+        controller.update(captured, (100, 100), (20, 10, 40, 30))
+    ready, hold_waiting = threading.Event(), threading.Event()
+    original_hold = controller.hold
+
+    def hold(**kwargs):
+        hold_waiting.set()
+        return original_hold(**kwargs)
+
+    def lose_target():
+        if ready.wait(2):
+            session.lose_manual_target()
+
+    def authorize(*_):
+        ready.set()
+        assert hold_waiting.wait(2)
+        assert not session.manual_target_lost
+        return True
+
+    monkeypatch.setattr(controller, "hold", hold)
+    worker = threading.Thread(target=lose_target)
+    worker.start()
+    try:
+        assert controller.dispatch_tracking(authorize, lambda: not session.manual_target_lost)
+    finally:
+        worker.join(timeout=2)
+    assert not worker.is_alive() and session.manual_target_lost
+    assert controller.snapshot().state == "HOLD"
+    assert not controller.dispatch_tracking(lambda *_: True, lambda: pytest.fail("sent after loss"))
 
 
 def test_gui_rejects_late_results_after_clear_and_accepts_fresh_results(

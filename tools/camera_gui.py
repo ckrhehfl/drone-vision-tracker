@@ -510,6 +510,7 @@ def observation_for_preview(result, captured, shape, now):
 
 class CameraSession:
     pan_tilt: PanTiltController | None = None
+    manual_target_lost = True
 
     def __init__(
         self,
@@ -547,7 +548,6 @@ class CameraSession:
         )
         self.manual_engine = "대기"
         self.manual_displayed_at = None
-        self.manual_target_lost = True
         self.pan_tilt = (
             PanTiltController.simulated(
                 clock=time.monotonic if live_yolo else None,
@@ -725,6 +725,15 @@ class CameraSession:
                 Path(parent) / f"learning-{self.metrics.session_id}", self.metrics
             )
 
+    def lose_manual_target(self):
+        if self.manual_target_lost:
+            return
+        controller = self.pan_tilt
+        if controller is None:
+            self.manual_target_lost = True
+        else:
+            controller.hold(publish=lambda: setattr(self, "manual_target_lost", True))
+
     def process(self):
         video_input = self.metrics.settings.get("source_type") == "video_test"
         flip_vertical = self.metrics.settings.get("flip_vertical", False)
@@ -779,7 +788,7 @@ class CameraSession:
                 if not video_input and started - captured > MAX_AGE_S:
                     yolo.lose()
                     if model is None:
-                        self.manual_target_lost = True
+                        self.lose_manual_target()
                     if self.pan_tilt is not None:
                         self.pan_tilt.snapshot()
                         self.pan_tilt.hold()
@@ -796,7 +805,7 @@ class CameraSession:
                     motion_frame = None
                     tracker_ready = False
                     if model is None:
-                        self.manual_target_lost = True
+                        self.lose_manual_target()
                 try:
                     selection = self.selections.get_nowait()
                     yolo.lose()
@@ -806,7 +815,8 @@ class CameraSession:
                     signature, pending = None, None
                     motion_frame = None
                     tracker_ready = False
-                    self.manual_target_lost = True
+                    if model is None:
+                        self.lose_manual_target()
                     if selection is not None and selection[2].shape[:2] == shape:
                         template, previous, motion_frame, motion_time = selection
                         recent_template = template
@@ -913,7 +923,7 @@ class CameraSession:
                                 method, region = "ViT", whole
                         if detection is None:
                             # Searching can find a lookalike. Only a fresh drag authorizes motion.
-                            self.manual_target_lost = True
+                            self.lose_manual_target()
                         mask = color_mask(frame, signature) if detection is None else None
                         searchable = mask is not None and mask.any()
                         if detection is None and searchable:
@@ -1073,7 +1083,7 @@ class CameraSession:
                     motion_frame = frame if detection is not None else None
                     motion_time = captured
                     if detection is None:
-                        self.manual_target_lost = True
+                        self.lose_manual_target()
                         tracker_ready = False
                         if candidate is None:
                             pending = None
@@ -2125,11 +2135,11 @@ class CameraGUI:
                 messagebox.showerror("평가 실패", str(exc))
 
     def interrupt_manual_tracking(self):
-        self.session.manual_target_lost = True
         self.session.manual_displayed_at = None
         motor_panel = getattr(self, "motor_panel", None)
         if motor_panel is not None:
             motor_panel.stop_tilt_tracking()
+        self.session.manual_target_lost = True
 
     def clear(self):
         if self.session and not self.session.model_path:
@@ -2446,21 +2456,26 @@ class CameraGUI:
     def close(self):
         if self.closing:
             return
+        self.closing = True
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.stop()
         if (
             self.label_editor is not None
             and self.label_editor.window.winfo_exists()
             and not self.label_editor.request_close()
         ):
+            self.closing = False
             return
         if (
             self.training_window is not None
             and self.training_window.window.winfo_exists()
             and not self.training_window.request_close()
         ):
+            self.closing = False
             if self.training_window.closing:
                 self.root.after(50, self.close)
             return
-        self.closing = True
         self.video_cancel.set()
         self.stop()
         self.finish_close()

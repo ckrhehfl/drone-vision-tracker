@@ -1,4 +1,5 @@
 import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -241,6 +242,21 @@ def test_default_command_never_imports_serial(monkeypatch):
     assert main([]) == 0
 
 
+def test_pan0_205_handoff_preserves_logic_power_before_serial(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "serial", None)
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    assert (
+        main(
+            "--hardware --port unused --min-ticks 200 --start-ticks 205 "
+            "--max-ticks 210 --direction 1".split()
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "PCA9685 논리전원을 유지" in output and "두 축 잔류 명령" in output
+    assert "전원 재투입" not in output
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -366,6 +382,8 @@ def test_video_exit_reports_late_errors_after_cleanup(failure, tmp_path, monkeyp
             sessions.append(self)
 
         def result(self):
+            if failure == "none" and not self.display_ack.is_set():
+                return clock(), (100, 100), (70, 45, 80, 55)
             if failure == "race":
                 self.error = "decode failed during result acknowledgement"
                 self.errors.put(self.error)
@@ -399,7 +417,7 @@ def test_video_exit_reports_late_errors_after_cleanup(failure, tmp_path, monkeyp
     video.touch()
     model.touch()
     result = main(["--video", str(video), "--model", str(model), "--duration", "0.15"])
-    assert result == (0 if failure in {"none", "duration"} else 1)
+    assert result == (0 if failure == "none" else 1)
     assert sessions[0].stop.is_set() and sessions[0].cleaned
 
 
@@ -525,18 +543,12 @@ def test_video_warmup_precedes_arm_and_preserves_first_result(case, monkeypatch)
             commands.append(command)
 
     monkeypatch.setattr("tools.camera_gui.CameraSession", Session)
-    if case == "error":
-        with pytest.raises(RuntimeError, match="model warmup failed"):
-            run(
-                PROFILE,
-                link=Link(),
-                video="unused",
-                model="unused",
-                duration=1.2,
-                clock=clock,
-                sleep=clock.sleep,
-            )
-    else:
+    expected = {
+        "error": "model warmup failed",
+        "timeout": "첫 영상 처리 결과",
+        "stop": "첫 영상 처리 결과",
+    }.get(case)
+    with pytest.raises(RuntimeError, match=expected) if expected else nullcontext():
         run(
             PROFILE,
             link=Link(),
@@ -547,7 +559,7 @@ def test_video_warmup_precedes_arm_and_preserves_first_result(case, monkeypatch)
             sleep=clock.sleep,
         )
     if case in {"error", "timeout", "stop"}:
-        assert "ARM" not in events and "SET" not in events and not acknowledgements
+        assert events == ["DISARM"] and not acknowledgements
     else:
         assert events.index("ready") < events.index("ARM") < events.index("SET")
         original = next(item[1] for item in events if isinstance(item, tuple))

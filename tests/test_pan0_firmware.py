@@ -88,6 +88,7 @@ def firmware(tmp_path_factory):
         "partial",
         "mismatch",
         "bad-set",
+        "angle-boundaries",
         "overflow",
         "partial-line",
         "flood",

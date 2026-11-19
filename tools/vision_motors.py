@@ -270,6 +270,7 @@ class MotorWorker:
     def __init__(self, port, profile, *, serial_factory=open_serial):
         self.port, self.profile, self.serial_factory = port, profile, serial_factory
         self.stopping = threading.Event()
+        self._write_lock = threading.Lock()
         self.state, self.error, self.ticks = "CONNECTING", None, None
         self.controller = self.session = self._requested_session = None
         self._jog_keys = Queue(maxsize=1)
@@ -302,7 +303,8 @@ class MotorWorker:
                 pass
 
     def stop(self):
-        self.stopping.set()
+        with self._write_lock:
+            self.stopping.set()
         if self.controller is not None:
             self.controller.stop()
 
@@ -310,16 +312,27 @@ class MotorWorker:
         return self.thread.is_alive()
 
     def _write_if_active(self, write):
-        return not self.session.stop.is_set() and not self.stopping.is_set() and write()
+        with self._write_lock:
+            return not self.session.stop.is_set() and not self.stopping.is_set() and write()
 
     def _follow_both_cycle(self, link):
         command = self.controller.snapshot()
         if command.state == "TRACK":
+            target = self.profile.command_ticks(command)
+
+            def same_direction(latest, pan_error, tilt_error):
+                return latest == command and all(
+                    goal == output or (output - goal) * error > 0
+                    for goal, output, error in zip(
+                        target, self.ticks, (pan_error, tilt_error), strict=True
+                    )
+                )
+
             ticks = link.request(
                 "SET_TICKS",
-                *self.profile.command_ticks(command),
+                *target,
                 dispatch=lambda write: self.controller.dispatch_tracking(
-                    lambda latest, _: latest == command, lambda: self._write_if_active(write)
+                    same_direction, lambda: self._write_if_active(write)
                 ),
             )
             if ticks is not None:
@@ -328,6 +341,7 @@ class MotorWorker:
         ticks = link.request("HOLD", dispatch=self._write_if_active)
         if ticks is not None:
             self.ticks = ticks
+            self.controller.hold_at_output(*(nominal_angle(t) for t in ticks))
 
     def _tilt_target(self, tilt, command, tilt_adjustment):
         if (
@@ -368,7 +382,7 @@ class MotorWorker:
                 if manual_source and not _live_preview(self.session):
                     return False
 
-                def same_direction(command, adjustment):
+                def same_direction(command, _pan_adjustment, adjustment):
                     if manual_source and self.session.manual_target_lost:
                         return False
                     current = self._tilt_target(tilt, command, adjustment)
@@ -425,7 +439,18 @@ class MotorWorker:
                 return
             if not _live_preview(self.session):
                 raise RuntimeError("실시간 화면 갱신이 끊겨 키보드 시험을 종료합니다.")
-            self.ticks = link.request("SET_TICKS", pan, tilt)
+
+            def dispatch(write):
+                return self._write_if_active(
+                    lambda: 0 <= time.monotonic() - pressed_at <= 0.15
+                    and _live_preview(self.session)
+                    and write()
+                )
+
+            ticks = link.request("SET_TICKS", pan, tilt, dispatch=dispatch)
+            if ticks is None:
+                return
+            self.ticks = ticks
             self._jog_goal = (pan, tilt)
             # Wait for one 50 ms firmware step before HOLD can cancel the new target.
             self._jog_check_at = time.monotonic() + STEP_SETTLE_DELAY

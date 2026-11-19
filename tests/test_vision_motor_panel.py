@@ -352,17 +352,64 @@ def test_close_waits_for_motor_cleanup_before_destroying_gui():
     gui.closing = False
     gui.label_editor = gui.training_window = gui.session = gui.video_thread = None
     gui.video_cancel = threading.Event()
-    gui.motor_panel = SimpleNamespace(alive=lambda: True)
+    gui.motor_panel = SimpleNamespace(alive=lambda: True, stop=lambda: events.append("motor stop"))
     gui.stop = lambda: events.append("stop")
     gui.root = SimpleNamespace(
         after=lambda _delay, callback: callbacks.append(callback),
         destroy=lambda: events.append("destroy"),
     )
     gui.close()
-    assert events == ["stop"] and callbacks == [gui.finish_close]
+    assert events == ["motor stop", "stop"] and callbacks == [gui.finish_close]
     gui.motor_panel.alive = lambda: False
     callbacks[0]()
-    assert events == ["stop", "destroy"]
+    assert events == ["motor stop", "stop", "destroy"]
+
+
+@pytest.mark.parametrize("child", ["label_editor", "training_window"])
+def test_close_stops_motor_before_asking_to_save_and_keeps_it_locked_on_cancel(
+    panel, monkeypatch, child
+):
+    p, _ = panel
+    gui = CameraGUI.__new__(CameraGUI)
+    gui.closing = False
+    gui.label_editor = gui.training_window = None
+    gui.motor_panel = p
+    p.is_closing = lambda: gui.closing
+    p.power_off.set(True)
+    p.ready_to_move.set(True)
+    profile = SimpleNamespace(manual_tilt=False)
+    worker = p.worker = SimpleNamespace(
+        profile=profile,
+        alive=lambda: False,
+        stop=Mock(),
+        arm=Mock(),
+        stopping=threading.Event(),
+    )
+    worker.stop.side_effect = worker.stopping.set
+    create = Mock()
+    monkeypatch.setattr("tools.vision_motor_panel.MotorWorker", create)
+
+    def request_close():
+        assert gui.closing and worker.stopping.is_set()
+        p.connect()
+        p.arm()
+        return False
+
+    setattr(
+        gui,
+        child,
+        SimpleNamespace(
+            window=SimpleNamespace(winfo_exists=lambda: True),
+            request_close=request_close,
+            closing=False,
+        ),
+    )
+    gui.close()
+    assert not gui.closing and worker.stopping.is_set()
+    assert p.worker is worker
+    create.assert_not_called()
+    worker.stop.assert_called_once()
+    worker.arm.assert_not_called()
 
 
 def test_closing_camera_rejects_new_motor_connection_while_video_finishes(panel, monkeypatch):

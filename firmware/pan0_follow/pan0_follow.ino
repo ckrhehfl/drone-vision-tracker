@@ -222,8 +222,9 @@ void handle(char *line) {
   if (count == 5 && !strcmp(fields[0], "SET") && unsignedNumber(fields[3], pan) && pan <= 18000 &&
       unsignedNumber(fields[4], tilt) && tilt == (PAN01_CENTER205_ONLY ? 9000 : 0)) {
     int ticks = 330 - ((long)pan * 250 + 9000) / 18000;
-    if ((PAN01_CENTER205_ONLY ? pan != 9000 : ticks < MIN_TICKS || ticks > MAX_TICKS ||
-         (outputTicks < 0 && ticks != START_TICKS))) {
+    if (PAN01_CENTER205_ONLY ? pan != 9000 :
+        (long)pan < (330 - MAX_TICKS) * 72L || (long)pan > (330 - MIN_TICKS) * 72L ||
+        (outputTicks < 0 && ticks != START_TICKS)) {
       disarm();
       response("ERR", session, seq, "OUT_OF_RANGE", true); return;
     }
