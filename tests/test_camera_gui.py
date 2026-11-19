@@ -1640,9 +1640,7 @@ def test_preview_expires_old_or_mismatched_observations():
 def test_manual_tracking_uses_frame_capture_time_for_motor_freshness(
     monkeypatch, manual_appearance
 ):
-    from unittest.mock import Mock
-
-    import numpy as np
+    from unittest.mock import MagicMock, Mock
 
     import tools.camera_gui as gui
     from tools.vision_motors import MotorProfile
@@ -1655,8 +1653,12 @@ def test_manual_tracking_uses_frame_capture_time_for_motor_freshness(
     controller = profile.controller((247, 205), flip_vertical=True)
     session.pan_tilt = controller
     box = (15, 10, 35, 30, 0.9)
-    frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    session.selections.put((frame[:, :, 0], box[:4], frame, now[0]))
+    frame, sample = MagicMock(shape=(100, 100, 3)), SimpleNamespace(std=lambda: 20)
+    frame.__getitem__.return_value = sample
+    monkeypatch.setitem(
+        sys.modules, "cv2", SimpleNamespace(COLOR_BGR2GRAY=6, cvtColor=lambda image, code: image)
+    )
+    session.selections.put((sample, box[:4], frame, now[0]))
     monkeypatch.setattr(gui, "create_manual_tracker", lambda *args: None)
     monkeypatch.setattr(gui, "track_motion", Mock(side_effect=[box, box, box, None]))
     monkeypatch.setattr(gui, "color_mask", lambda *args: None)
