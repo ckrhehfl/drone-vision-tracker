@@ -128,6 +128,13 @@ def choose_target(detections, previous):
     )
 
 
+def box_inside_frame(box, shape):
+    left, top, right, bottom = box[:4]
+    height, width = shape[:2]
+    # Resized YOLO boxes can place a clipped edge within the border pixel.
+    return 1 <= left < right <= width - 1 and 1 <= top < bottom <= height - 1
+
+
 class YoloReacquisition:
     """Confirm a lost target on three consistent fresh frames before publishing it."""
 
@@ -834,6 +841,13 @@ class CameraSession:
                 if previous is not None and tracking_time - last_seen > MAX_AGE_S:
                     if not yolo.required:
                         yolo.lose()
+                if (
+                    model is not None
+                    and yolo.required
+                    and previous is not None
+                    and not box_inside_frame(previous, shape)
+                ):
+                    previous = yolo.confirmed_box or previous
                 if tracking_time - last_seen > 2.0:
                     previous = None
                     motion_frame = None
@@ -1077,8 +1091,8 @@ class CameraSession:
                     pending = None
                     previous = detection[:4]
                     last_seen = tracking_time if video_input or model is not None else finished
-                    if model is not None:
-                        yolo.confirmed_box = detection[:4]
+                    if model is not None and box_inside_frame(previous, shape):
+                        yolo.confirmed_box = previous
                     if appearance is not None:
                         recent_template = appearance
                 if model is None:

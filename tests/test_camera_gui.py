@@ -2596,6 +2596,36 @@ def test_yolo_releases_old_position_after_two_seconds_but_confirms_new_candidate
     assert records[-3][5] == "재획득 확인 중 (1/3)"
 
 
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize("clipped_top", [0, 0.5])
+def test_yolo_reacquires_after_losing_an_edge_clipped_box(run_yolo_frames, video, clipped_top):
+    full = (22, 2, 70, 36, 0.9)
+    edge = (22, 0, 70, 25, 0.9)
+    clipped = (30, clipped_top, 62, 12, 0.9)
+    background = (0, 45, 30, 80, 0.99)
+    returned = (24, 12, 83, 48, 0.8)
+    records, _ = run_yolo_frames(
+        [
+            (0, [full]),
+            (0.05, [edge]),
+            (0.08, [clipped]),
+            (0.1, []),
+            (0.2, [background]),
+            (0.3, [returned]),
+            (0.4, [returned]),
+            (0.5, [returned]),
+        ],
+        video=video,
+    )
+    assert [r[2] for r in records] == [full, edge, clipped, None, None, None, None, returned]
+    assert [r[5] for r in records[4:]] == [
+        "재검색",
+        "재획득 확인 중 (1/3)",
+        "재획득 확인 중 (2/3)",
+        "재획득",
+    ]
+
+
 def test_yolo_geometry_change_discards_partial_confirmation(run_yolo_frames):
     box = (10, 10, 30, 30, 0.9)
     records, _ = run_yolo_frames(
