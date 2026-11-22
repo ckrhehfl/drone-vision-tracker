@@ -2626,6 +2626,61 @@ def test_yolo_reacquires_after_losing_an_edge_clipped_box(run_yolo_frames, video
     ]
 
 
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize(
+    ("history", "returned"),
+    [
+        pytest.param(
+            [(10, 5, 40, 25), (10, 0, 40, 20), (25, 0, 55, 20), (40, 0, 70, 20)],
+            (40, 5, 70, 25),
+            id="moves-along-edge",
+        ),
+        pytest.param(
+            [(20, 2, 40, 12), (18, 0, 42, 18), (14, 0, 48, 24)],
+            (14, 2, 48, 30),
+            id="grows-along-edge",
+        ),
+    ],
+)
+def test_yolo_reacquires_using_latest_edge_box(run_yolo_frames, video, history, returned):
+    boxes = [(*box, 0.9) for box in history]
+    returned = (*returned, 0.9)
+    records, _ = run_yolo_frames(
+        [
+            *((index * 0.05, [box]) for index, box in enumerate(boxes)),
+            (0.2, []),
+            (0.25, [returned]),
+            (0.35, [returned]),
+            (0.45, [returned]),
+        ],
+        video=video,
+    )
+    assert [r[2] for r in records] == [*boxes, None, None, None, returned]
+    assert records[-1][5] == "재획득"
+
+
+@pytest.mark.parametrize("video", [False, True])
+def test_yolo_size_guard_uses_the_first_clipped_observation(run_yolo_frames, video):
+    clipped = (0, 10, 20, 30, 0.9)
+    background = (20, 20, 75, 75, 0.99)
+    returned = (30, 15, 55, 45, 0.8)
+    records, _ = run_yolo_frames(
+        [
+            (0, [clipped]),
+            (0.05, []),
+            (2.05, [background]),
+            (2.1, [background]),
+            (2.15, [background]),
+            (2.2, [returned]),
+            (2.25, [returned]),
+            (2.3, [returned]),
+        ],
+        video=video,
+    )
+    assert [r[2] for r in records] == [clipped, None, None, None, None, None, None, returned]
+    assert records[-1][5] == "재획득"
+
+
 def test_yolo_geometry_change_discards_partial_confirmation(run_yolo_frames):
     box = (10, 10, 30, 30, 0.9)
     records, _ = run_yolo_frames(

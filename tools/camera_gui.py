@@ -110,11 +110,15 @@ def selection_box(start, end, width, height):
     return (x1, y1, x2, y2) if x2 - x1 >= 12 and y2 - y1 >= 12 else None
 
 
+def box_area(box):
+    return (box[2] - box[0]) * (box[3] - box[1])
+
+
 def overlap(a, b):
     intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(
         0, min(a[3], b[3]) - max(a[1], b[1])
     )
-    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - intersection
+    union = box_area(a) + box_area(b) - intersection
     return intersection / union if union > 0 else 0.0
 
 
@@ -142,6 +146,7 @@ class YoloReacquisition:
         self.required = False
         self.candidate = None
         self.confirmed_box = None
+        self.complete_box = None
         self.first_seen, self.last_seen, self.count = 0.0, 0.0, 0
 
     def lose(self):
@@ -164,10 +169,10 @@ class YoloReacquisition:
         if not self.required:
             return detection, "YOLO"
         if self.confirmed_box is not None:
-            x1, y1, x2, y2 = self.confirmed_box
-            area = (detection[2] - detection[0]) * (detection[3] - detection[1])
-            # shortcut: large scale jumps need a new session or better identity evidence.
-            if area > 4 * (x2 - x1) * (y2 - y1):
+            reference_area = box_area(self.confirmed_box)
+            if self.complete_box is not None:
+                reference_area = max(reference_area, box_area(self.complete_box))
+            if box_area(detection) > 4 * reference_area:
                 self.lose()
                 return None, "재검색"
         previous = self.candidate_for(observed)
@@ -807,7 +812,7 @@ class CameraSession:
                 if geometry != shape:
                     if geometry is not None:
                         yolo.lose()
-                    yolo.confirmed_box = None
+                    yolo.confirmed_box = yolo.complete_box = None
                     template, previous, geometry, scan_index = None, None, shape, 0
                     recent_template = None
                     signature, pending = None, None
@@ -818,7 +823,7 @@ class CameraSession:
                 try:
                     selection = self.selections.get_nowait()
                     yolo.lose()
-                    yolo.confirmed_box = None
+                    yolo.confirmed_box = yolo.complete_box = None
                     template, previous, scan_index = None, None, 0
                     recent_template = None
                     signature, pending = None, None
@@ -841,31 +846,41 @@ class CameraSession:
                 if previous is not None and tracking_time - last_seen > MAX_AGE_S:
                     if not yolo.required:
                         yolo.lose()
-                if (
-                    model is not None
-                    and yolo.required
-                    and previous is not None
-                    and not box_inside_frame(previous, shape)
-                ):
-                    previous = yolo.confirmed_box or previous
                 if tracking_time - last_seen > 2.0:
                     previous = None
                     motion_frame = None
                     tracker_ready = False
+                search_box = previous
+                edge_reference = None
+                if (
+                    model is not None
+                    and yolo.required
+                    and previous is not None
+                    and yolo.complete_box is not None
+                    and not box_inside_frame(previous, shape)
+                ):
+                    edge_reference = yolo.complete_box
+                    # Keep both possible positions in the same inference region.
+                    search_box = (
+                        min(previous[0], edge_reference[0]),
+                        min(previous[1], edge_reference[1]),
+                        max(previous[2], edge_reference[2]),
+                        max(previous[3], edge_reference[3]),
+                    )
                 whole = (0, 0, shape[1], shape[0])
                 region = whole
                 search_template = template
                 recent = previous is not None and tracking_time - last_seen <= 1.0
                 small = (
-                    previous is not None
+                    search_box is not None
                     and max(
-                        (previous[2] - previous[0]) / shape[1],
-                        (previous[3] - previous[1]) / shape[0],
+                        (search_box[2] - search_box[0]) / shape[1],
+                        (search_box[3] - search_box[1]) / shape[0],
                     )
                     <= 0.08
                 )
                 if recent and (model is None or small):
-                    region = target_crop(previous, shape)
+                    region = target_crop(search_box, shape)
                 elif not recent and (model is not None or template is not None):
                     tiles = search_tiles(shape)
                     # One broad search per sweep also covers targets larger than a tile.
@@ -1057,9 +1072,10 @@ class CameraSession:
                         if 0 <= left < right <= width and 0 <= top < bottom <= height:
                             detections.append(box)
                     # ponytail: IoU needs overlapping boxes; add an ID tracker for fast motion.
-                    detection, method = yolo.observe(
-                        choose_target(detections, yolo_candidate or previous), tracking_time
-                    )
+                    detection = choose_target(detections, yolo_candidate or previous)
+                    if detection is None and yolo_candidate is None and edge_reference is not None:
+                        detection = choose_target(detections, edge_reference)
+                    detection, method = yolo.observe(detection, tracking_time)
                 appearance = None
                 if model is None and detection is not None:
                     x1, y1, x2, y2 = (round(v) for v in detection[:4])
@@ -1091,8 +1107,10 @@ class CameraSession:
                     pending = None
                     previous = detection[:4]
                     last_seen = tracking_time if video_input or model is not None else finished
-                    if model is not None and box_inside_frame(previous, shape):
+                    if model is not None:
                         yolo.confirmed_box = previous
+                        if box_inside_frame(previous, shape):
+                            yolo.complete_box = previous
                     if appearance is not None:
                         recent_template = appearance
                 if model is None:
