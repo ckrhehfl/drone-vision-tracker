@@ -103,6 +103,46 @@ def test_other_platforms_keep_existing_number_selection_without_probing(monkeypa
     assert all(not d["builtin"] for d in cameras)
 
 
+def test_camera_capture_flips_rows_once_for_preview_and_tracking(monkeypatch):
+    monkeypatch.setattr(threading.Thread, "start", lambda self: None)
+    session = CameraSession(0, None, 0.65, "cpu", flip_vertical=True)
+    original = SimpleNamespace(shape=(2, 2, 3), rows=((1, 2), (3, 4)))
+    samples, flips = [], []
+    session.collector = SimpleNamespace(
+        submit=lambda _, __, frame: samples.append(frame), close=lambda: None
+    )
+
+    def read():
+        session.stop.set()
+        return True, original
+
+    def flip(frame, axis):
+        flips.append((frame, axis))
+        return SimpleNamespace(shape=frame.shape, rows=frame.rows[::-1])
+
+    capture = SimpleNamespace(
+        isOpened=lambda: True, read=read, set=lambda *args: None, release=lambda: None
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        SimpleNamespace(
+            VideoCapture=lambda *a: capture,
+            CAP_ANY=0,
+            CAP_AVFOUNDATION=1,
+            CAP_PROP_FRAME_WIDTH=2,
+            CAP_PROP_FRAME_HEIGHT=3,
+            CAP_PROP_FPS=4,
+            flip=flip,
+        ),
+    )
+    session.capture()
+    preview, tracked = session.previews.get_nowait(), session.frames.get_nowait()
+    assert session.errors.empty() and flips == [(original, 0)]
+    assert preview is tracked and preview[1].rows == ((3, 4), (1, 2))
+    assert samples == [original] and original.rows == ((1, 2), (3, 4))
+
+
 @pytest.fixture
 def camera_controls():
     class Control:
@@ -118,8 +158,13 @@ def camera_controls():
         def configure(self, **kwargs):
             self.options.update(kwargs)
 
+        def cget(self, key):
+            return self.options.get(key)
+
     app = CameraGUI.__new__(CameraGUI)
     app.closing = False
+    app.camera_results = queue.Queue(maxsize=1)
+    app.scanning_cameras = False
     app.video_thread = None
     app.video_cancel = threading.Event()
     app.video_results = queue.Queue(maxsize=1)
@@ -168,11 +213,14 @@ def camera_controls():
         ("resolution", "1920×1080"),
         ("preview_fps", "60"),
         ("source", "camera"),
+        ("flip_vertical", False),
         ("page", "tracking"),
     ):
         setattr(app, name, Control(value))
     app.canvas = SimpleNamespace(
         delete=lambda *args: None,
+        focus_set=lambda: None,
+        update_idletasks=lambda: None,
         winfo_width=lambda: 640,
         winfo_height=lambda: 480,
         create_text=lambda *args, **kwargs: None,
@@ -187,35 +235,76 @@ def test_mode_change_applies_appropriate_quality_threshold(camera_controls, mode
     assert camera_controls.threshold.get() == expected
 
 
-def test_camera_menu_defaults_to_mac_and_preserves_usb_identity(monkeypatch, camera_controls):
-    import tools.camera_gui as gui
-
+def test_camera_picker_defaults_to_mac_and_preserves_usb_identity(camera_controls):
     usb = {"id": "usb", "name": "Webcam", "index": 0, "builtin": False, "kind": "USB 카메라"}
     twin = dict(usb, id="twin", index=1)
     mac = dict(usb, id="mac", name="MacBook 카메라", index=2, builtin=True, kind="Mac 내장 카메라")
-    devices = [usb, twin, mac]
-    monkeypatch.setattr(gui, "list_cameras", lambda: devices)
     app = camera_controls
-    app.refresh_cameras()
+
+    def finish_listing(devices):
+        app.camera_results.put_nowait((devices, None))
+        app.finish_camera_refresh()
+
+    finish_listing([usb, twin, mac])
     assert app.cameras[app.camera.get()]["id"] == "mac"
     assert tuple(app.cameras) == app.camera_select.options["values"]
     assert "USB 카메라 · Webcam (2)" in app.cameras
     app.camera.set("USB 카메라 · Webcam (2)")
-    devices[:] = [dict(mac, index=0), dict(twin, name="Renamed Webcam", index=1)]
-    app.refresh_cameras()
+    finish_listing([dict(mac, index=0), dict(twin, name="Renamed Webcam", index=1)])
     assert app.cameras[app.camera.get()]["id"] == "twin"
     assert app.camera.get() == "USB 카메라 · Renamed Webcam"
-    devices[:] = [mac]
-    app.refresh_cameras()
+    finish_listing([mac])
     assert app.cameras[app.camera.get()]["id"] == "mac"
-    devices.clear()
-    app.refresh_cameras()
+    finish_listing([])
     assert app.cameras == {} and app.camera.get() == "연결된 카메라 없음"
     assert app.start_button.options["state"] == "disabled"
     assert "연결된 카메라가 없습니다" in app.status.get()
-    app.session = object()
-    monkeypatch.setattr(gui, "list_cameras", lambda: pytest.fail("active camera menu is locked"))
+
+
+def test_camera_refresh_waits_off_ui_thread_without_blocking_video(monkeypatch, camera_controls):
+    import tools.camera_gui as gui
+
+    app = camera_controls
+    started, finished = threading.Event(), threading.Event()
+    calls = []
+    camera = {"id": "usb", "name": "Mock", "index": 0, "builtin": False, "kind": "USB"}
+
+    def listing():
+        calls.append(threading.get_ident())
+        started.set()
+        finished.wait(2)
+        return [camera]
+
+    monkeypatch.setattr(gui, "list_cameras", listing)
+    app.status.set("입력을 선택하고 추적을 시작하세요.")
     app.refresh_cameras()
+    try:
+        assert started.wait(1) and len(calls) == 1 and calls[0] != threading.get_ident()
+        assert app.scanning_cameras and app.cameras == {} and app.camera_results.empty()
+        assert (
+            app.start_button.options["state"] == app.refresh_button.options["state"] == "disabled"
+        )
+        assert app.refresh_button.options["text"] == "조회 중…"
+        app.refresh_cameras()
+        app.source.set("video")
+        app.update_input_controls()
+        assert app.status.get() == "입력을 선택하고 추적을 시작하세요."
+        app.video_path = Path("local.mp4")
+        app.update_input_controls()
+        assert app.start_button.options["state"] == "normal"
+        app.status.set("동영상 선택 완료")
+    finally:
+        finished.set()
+    result = app.camera_results.get(timeout=1)
+    app.camera_results.put_nowait(result)
+    app.finish_camera_refresh()
+    assert len(calls) == 1 and not app.scanning_cameras
+    assert app.camera_select.options["state"] == "readonly"
+    assert app.refresh_button.options["text"] == "↻ 새로고침"
+    assert app.cameras[app.camera.get()] is camera and app.status.get() == "동영상 선택 완료"
+    app.session = object()
+    app.refresh_cameras()
+    assert not app.scanning_cameras
 
 
 @pytest.mark.parametrize("device", ["mps", "cpu", "cuda"])
@@ -237,13 +326,15 @@ def test_camera_start_passes_selected_identity_and_locks_menu(
         SimpleNamespace(messagebox=SimpleNamespace(showerror=lambda *a: errors.append(a))),
     )
 
-    def start(*args):
-        calls.append(args)
+    def start(*args, **kwargs):
+        calls.append((args, kwargs))
         return SimpleNamespace(stop=threading.Event(), metrics=SessionMetrics())
 
     monkeypatch.setattr(gui, "CameraSession", start)
     app.start()
-    assert calls == [(camera, None, 0.65, device, (1920, 1080))]
+    assert calls == [
+        ((camera, None, 0.65, device, (1920, 1080)), {"video_path": None, "flip_vertical": False})
+    ]
     assert errors == []
     assert app.metrics.settings["preview_target_fps"] == int(fps)
     assert all(
@@ -285,8 +376,14 @@ def test_invalid_preview_fps_never_starts_capture(monkeypatch, camera_controls, 
 @pytest.mark.parametrize("alive", [False, True])
 def test_close_stops_workers_before_destroying_window(camera_controls, alive):
     app, destroyed, callbacks = camera_controls, [], []
+    stop_calls = []
     session = SimpleNamespace(stop=threading.Event(), alive=lambda: alive, finish=lambda: None)
-    session.request_stop = session.stop.set
+
+    def request_stop():
+        stop_calls.append(True)
+        session.stop.set()
+
+    session.request_stop = request_stop
     app.session = session
     app.root = SimpleNamespace(
         destroy=lambda: destroyed.append(True),
@@ -295,15 +392,17 @@ def test_close_stops_workers_before_destroying_window(camera_controls, alive):
     app.close()
     assert app.closing and session.stop.is_set()
     if alive:
-        assert callbacks == [(50, app.close)] and not destroyed
+        assert callbacks == [(50, app.finish_close)] and not destroyed
+        app.close()
+        assert len(callbacks) == 1
         session.alive = lambda: False
         callbacks[0][1]()
     else:
         assert not callbacks
-    assert destroyed == [True]
+    assert destroyed == stop_calls == [True]
 
 
-def test_camera_menu_disables_start_on_listing_error(monkeypatch, camera_controls):
+def test_camera_picker_disables_start_on_listing_error(monkeypatch, camera_controls):
     import tools.camera_gui as gui
 
     def unavailable():
@@ -311,11 +410,52 @@ def test_camera_menu_disables_start_on_listing_error(monkeypatch, camera_control
 
     monkeypatch.setattr(gui, "list_cameras", unavailable)
     app = camera_controls
-    app.refresh_cameras()
+    app.read_camera_list(app.camera_results)
+    app.finish_camera_refresh()
     assert app.cameras == {} and app.camera_select.options["values"] == ()
     assert app.camera.get() == "카메라 목록 조회 실패"
     assert app.start_button.options["state"] == "disabled"
     assert app.status.get() == "카메라 목록을 읽지 못했습니다"
+
+
+def test_close_cancel_applies_camera_lookup_finished_during_save_prompt(camera_controls):
+    app = camera_controls
+    camera = {"id": "usb", "name": "Mock", "index": 0, "builtin": False, "kind": "USB"}
+    app.scanning_cameras = True
+    app.update_input_controls()
+
+    def cancel_close():
+        app.camera_results.put_nowait(([camera], None))
+        app.finish_camera_refresh()
+        return False
+
+    app.label_editor = SimpleNamespace(
+        window=SimpleNamespace(winfo_exists=lambda: True),
+        request_close=cancel_close,
+    )
+    app.close()
+    assert not app.closing
+    app.finish_camera_refresh()
+
+    assert app.cameras[app.camera.get()] == camera
+    assert not app.scanning_cameras
+    assert app.camera_select.cget("state") == "readonly"
+    assert app.refresh_button.cget("state") == "normal"
+    assert app.refresh_button.cget("text") == "↻ 새로고침"
+    assert app.start_button.cget("state") == "normal"
+
+
+def test_close_does_not_wait_for_camera_lookup_or_apply_its_late_result(camera_controls):
+    app = camera_controls
+    destroyed = []
+    app.root = SimpleNamespace(destroy=lambda: destroyed.append(True))
+    app.scanning_cameras = True
+    app.close()
+    assert app.closing and destroyed == [True]
+    app.camera_results.put_nowait(([], "이미 창을 닫은 뒤 도착"))
+    app.finish_camera_refresh()
+    assert not app.scanning_cameras and app.status.get() == ""
+    assert not app.camera_select.options
 
 
 @pytest.mark.parametrize("state", ["renumbered", "removed", "race", "unavailable"])
@@ -367,6 +507,7 @@ def test_capture_resolves_selected_id_and_rejects_connection_changes(monkeypatch
     session.metrics = SessionMetrics()
     session.camera, session.resolution = selected, (1920, 1080)
     session.stop, session.errors = threading.Event(), queue.Queue()
+    session.serial_write_lock = threading.Lock()
     session.capture()
     assert session.stop.is_set()
     error = session.errors.get_nowait()
@@ -533,6 +674,7 @@ def test_camera_failure_releases_device(monkeypatch):
     session.stop = threading.Event()
     session.errors = queue.Queue()
     session.frames = queue.Queue(maxsize=1)
+    session.serial_write_lock = threading.Lock()
     session.capture()
     assert session.stop.is_set()
     assert "영상이 끊겼습니다" in session.errors.get_nowait()
@@ -971,6 +1113,7 @@ def test_manual_worker_reacquires_after_leaving_frame(
     selected = Frame("selected")
     original_box, returned_box = (100, 100, 200, 180), (1700, 900, 1800, 980)
     records, searches, motions, initializations, feature_searches = [], [], [], [], []
+    motor_boxes = []
     tracker = SimpleNamespace(init=lambda frame, box: initializations.append((frame, box)))
     session = CameraSession.__new__(CameraSession)
     session.collector = None
@@ -980,6 +1123,11 @@ def test_manual_worker_reacquires_after_leaving_frame(
     session.stop = threading.Event()
     session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
     session.results = queue.Queue(maxsize=1)
+    session.pan_tilt = SimpleNamespace(
+        update=lambda at, shape, box, **kwargs: motor_boxes.append(box),
+        hold=lambda *, publish: publish(),
+        stop=lambda: None,
+    )
     session.selections.put((initial, original_box, selected, clock.now))
     remaining = iter(zip((10.1, 10.2, 13.0, 13.1, 13.2, 13.3, 13.4), frames, strict=True))
 
@@ -1040,6 +1188,8 @@ def test_manual_worker_reacquires_after_leaving_frame(
     assert records[4][2] == (*returned_box, 0.9 if confirmation == "flow" else 0.95)
     assert records[4][5] == "재획득"
     assert records[5][5] == "특징점"
+    assert motor_boxes == [original_box, None, None, None, None, None]
+    assert session.manual_target_lost
     assert motions == [
         (selected, frames[0]),
         (frames[0], frames[1]),
@@ -1544,6 +1694,94 @@ def test_preview_expires_old_or_mismatched_observations():
     assert observation_for_preview(None, 10.1, (480, 640), 10.2) is None
 
 
+def test_manual_tracking_uses_frame_capture_time_for_motor_freshness(
+    monkeypatch, manual_appearance
+):
+    from unittest.mock import MagicMock, Mock
+
+    import tools.camera_gui as gui
+    from tools.vision_motors import MotorProfile
+
+    now = [10.0]
+    monkeypatch.setattr(gui.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(threading.Thread, "start", lambda self: None)
+    session = CameraSession(0, None, 0.65, "cpu", flip_vertical=True)
+    profile = MotorProfile(tilt_direction=-1, tilt_rate=2, tilt_only=True)
+    controller = profile.controller((247, 205), flip_vertical=True)
+    session.pan_tilt = controller
+    box = (15, 10, 35, 30, 0.9)
+    frame, sample = MagicMock(shape=(100, 100, 3)), SimpleNamespace(std=lambda: 20)
+    frame.__getitem__.return_value = sample
+    monkeypatch.setitem(
+        sys.modules, "cv2", SimpleNamespace(COLOR_BGR2GRAY=6, cvtColor=lambda image, code: image)
+    )
+    session.selections.put((sample, box[:4], frame, now[0]))
+    monkeypatch.setattr(gui, "create_manual_tracker", lambda *args: None)
+    monkeypatch.setattr(gui, "track_motion", Mock(side_effect=[box, box, box, None]))
+    monkeypatch.setattr(gui, "color_mask", lambda *args: None)
+    rows = iter([(10.01, 0.01), (10.06, 0.01), (10.11, 0.12), (10.26, 0.01)])
+    commands = []
+
+    def get(timeout):
+        try:
+            captured, age = next(rows)
+        except StopIteration:
+            session.stop.set()
+            raise queue.Empty from None
+        now[0] = captured + age
+        return captured, frame
+
+    def publish(channel, result):
+        commands.append((result[2], controller.snapshot()))
+        return False
+
+    session.frames = SimpleNamespace(get=get)
+    monkeypatch.setattr(gui, "put_latest", publish)
+    session.process()
+    assert session.errors.empty(), list(session.errors.queue)
+    assert [observed for observed, _ in commands] == [box, box, box, None]
+    assert [command.state for _, command in commands] == ["HOLD", "TRACK", "HOLD", "HOLD"]
+    assert commands[1][1].tilt_deg < commands[0][1].tilt_deg
+    assert all(command.pan_deg == commands[0][1].pan_deg for _, command in commands)
+
+
+def test_manual_loss_and_serial_dispatch_publish_in_lock_order(monkeypatch):
+    from tools.pan_tilt import PanTiltController
+
+    session = CameraSession.__new__(CameraSession)
+    session.manual_target_lost = False
+    controller = session.pan_tilt = PanTiltController.simulated()
+    for captured in (0.0, 0.05):
+        controller.update(captured, (100, 100), (20, 10, 40, 30))
+    ready, hold_waiting = threading.Event(), threading.Event()
+    original_hold = controller.hold
+
+    def hold(**kwargs):
+        hold_waiting.set()
+        return original_hold(**kwargs)
+
+    def lose_target():
+        if ready.wait(2):
+            session.lose_manual_target()
+
+    def authorize(*_):
+        ready.set()
+        assert hold_waiting.wait(2)
+        assert not session.manual_target_lost
+        return True
+
+    monkeypatch.setattr(controller, "hold", hold)
+    worker = threading.Thread(target=lose_target)
+    worker.start()
+    try:
+        assert controller.dispatch_tracking(authorize, lambda: not session.manual_target_lost)
+    finally:
+        worker.join(timeout=2)
+    assert not worker.is_alive() and session.manual_target_lost
+    assert controller.snapshot().state == "HOLD"
+    assert not controller.dispatch_tracking(lambda *_: True, lambda: pytest.fail("sent after loss"))
+
+
 def test_gui_rejects_late_results_after_clear_and_accepts_fresh_results(
     monkeypatch, camera_controls
 ):
@@ -1563,10 +1801,15 @@ def test_gui_rejects_late_results_after_clear_and_accepts_fresh_results(
         stop=threading.Event(),
     )
     app.session = session
+    stopped = []
+    app.motor_panel = SimpleNamespace(
+        stop_tilt_tracking=lambda: stopped.append(True), poll=lambda: None
+    )
     monkeypatch.setattr(gui.time, "monotonic", lambda: 10.0)
     monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "PIL", SimpleNamespace(Image=None, ImageTk=None))
     app.clear()
+    assert session.manual_displayed_at is None and stopped == [True]
     assert session.selections.get_nowait() is None
     monkeypatch.setattr(gui.time, "monotonic", lambda: 10.2)
     old_result = (9.9, (480, 640), (20, 20, 40, 40, 0.9), 0.02)
@@ -1640,6 +1883,7 @@ def test_opt_in_collection_dialog_and_finish_on_exit(monkeypatch, camera_control
     session.metrics = SessionMetrics()
     session.metrics.capture(session.metrics.started + 0.01, (100, 100))
     session.alive = lambda: False
+    session.serial_write_lock = threading.Lock()
     app.session = session
 
     def collector(path, metrics):
@@ -1751,7 +1995,7 @@ def test_close_cancels_video_and_waits_for_worker(camera_controls):
         destroy=lambda: destroyed.append(True),
     )
     app.close()
-    assert app.video_cancel.is_set() and callbacks == [(50, app.close)] and not destroyed
+    assert app.video_cancel.is_set() and callbacks == [(50, app.finish_close)] and not destroyed
     worker.is_alive = lambda: False
     callbacks[0][1]()
     assert destroyed == [True]
@@ -1860,6 +2104,7 @@ def test_yolo_unavailable_gpu_stops_before_model_loading(monkeypatch, device):
     )
     session = CameraSession.__new__(CameraSession)
     session.model_path, session.device = "trusted-local.pt", device
+    session.serial_write_lock = threading.Lock()
     session.metrics, session.errors, session.stop = (
         SessionMetrics(),
         queue.Queue(),
@@ -1952,15 +2197,32 @@ def run_yolo_frames(monkeypatch):
             y, x = slices
             return Frame((y.stop - y.start, x.stop - x.start, 3), self.boxes, (x.start, y.start))
 
-    def run(rows, *, video=False, device="cpu", commands=None, while_predicting=None, summary=None):
+    def run(
+        rows,
+        *,
+        video=False,
+        device="cpu",
+        commands=None,
+        while_predicting=None,
+        summary=None,
+        flip_vertical=False,
+        controller=None,
+    ):
         clock.now = 10.0
         records.clear()
         # Drive the real session wiring with fake frames and no capture worker.
         with monkeypatch.context() as patch:
             patch.setattr(threading.Thread, "start", lambda self: None)
             session = CameraSession(
-                0, "trusted-local.pt", 0.25, device, video_path="mock.mp4" if video else None
+                0,
+                "trusted-local.pt",
+                0.25,
+                device,
+                video_path="mock.mp4" if video else None,
+                flip_vertical=flip_vertical,
             )
+        if controller is not None:
+            session.pan_tilt = controller
         index, delay = 0, 0.0
         predicting, resume = threading.Event(), threading.Event()
 
@@ -2047,6 +2309,35 @@ def run_yolo_frames(monkeypatch):
         ),
     )
     return run
+
+
+def test_flipped_tracking_box_controls_the_servo_in_display_coordinates(
+    run_yolo_frames, monkeypatch
+):
+    from tools.vision_motors import MotorProfile
+
+    profile = MotorProfile(tilt_rate=2, tilt_only=True)
+    controller = profile.controller((247, 205), flip_vertical=True)
+    box = (20, 10, 30, 30, 0.9)
+    commands, motor_boxes = [], []
+    update = controller.update
+
+    def track(captured, shape, motor_box, **kwargs):
+        motor_boxes.append(motor_box)
+        return update(captured, shape, motor_box, **kwargs)
+
+    monkeypatch.setattr(controller, "update", track)
+    results, frames = run_yolo_frames(
+        [(0.0, [box]), (0.05, [box]), (0.1, [box])],
+        commands=commands,
+        controller=controller,
+        flip_vertical=True,
+    )
+    assert results[1][2] == box and frames[1]["box"] == [20, 70, 30, 90]
+    assert motor_boxes[1] == box[:4]
+    assert commands[1].state == "TRACK"
+    assert commands[1].pan_deg == commands[0].pan_deg
+    assert commands[1].tilt_deg > commands[0].tilt_deg
 
 
 @pytest.mark.parametrize("video", [False, True])
@@ -2331,6 +2622,91 @@ def test_yolo_releases_old_position_after_two_seconds_but_confirms_new_candidate
     assert records[-3][5] == "재획득 확인 중 (1/3)"
 
 
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize("clipped_top", [0, 0.5])
+def test_yolo_reacquires_after_losing_an_edge_clipped_box(run_yolo_frames, video, clipped_top):
+    full = (22, 2, 70, 36, 0.9)
+    edge = (22, 0, 70, 25, 0.9)
+    clipped = (30, clipped_top, 62, 12, 0.9)
+    background = (0, 45, 30, 80, 0.99)
+    returned = (24, 12, 83, 48, 0.8)
+    records, _ = run_yolo_frames(
+        [
+            (0, [full]),
+            (0.05, [edge]),
+            (0.08, [clipped]),
+            (0.1, []),
+            (0.2, [background]),
+            (0.3, [returned]),
+            (0.4, [returned]),
+            (0.5, [returned]),
+        ],
+        video=video,
+    )
+    assert [r[2] for r in records] == [full, edge, clipped, None, None, None, None, returned]
+    assert [r[5] for r in records[4:]] == [
+        "재검색",
+        "재획득 확인 중 (1/3)",
+        "재획득 확인 중 (2/3)",
+        "재획득",
+    ]
+
+
+@pytest.mark.parametrize("video", [False, True])
+@pytest.mark.parametrize(
+    ("history", "returned"),
+    [
+        pytest.param(
+            [(10, 5, 40, 25), (10, 0, 40, 20), (25, 0, 55, 20), (40, 0, 70, 20)],
+            (40, 5, 70, 25),
+            id="moves-along-edge",
+        ),
+        pytest.param(
+            [(20, 2, 40, 12), (18, 0, 42, 18), (14, 0, 48, 24)],
+            (14, 2, 48, 30),
+            id="grows-along-edge",
+        ),
+    ],
+)
+def test_yolo_reacquires_using_latest_edge_box(run_yolo_frames, video, history, returned):
+    boxes = [(*box, 0.9) for box in history]
+    returned = (*returned, 0.9)
+    records, _ = run_yolo_frames(
+        [
+            *((index * 0.05, [box]) for index, box in enumerate(boxes)),
+            (0.2, []),
+            (0.25, [returned]),
+            (0.35, [returned]),
+            (0.45, [returned]),
+        ],
+        video=video,
+    )
+    assert [r[2] for r in records] == [*boxes, None, None, None, returned]
+    assert records[-1][5] == "재획득"
+
+
+@pytest.mark.parametrize("video", [False, True])
+def test_yolo_size_guard_uses_the_first_clipped_observation(run_yolo_frames, video):
+    clipped = (0, 10, 20, 30, 0.9)
+    background = (20, 20, 75, 75, 0.99)
+    returned = (30, 15, 55, 45, 0.8)
+    records, _ = run_yolo_frames(
+        [
+            (0, [clipped]),
+            (0.05, []),
+            (2.05, [background]),
+            (2.1, [background]),
+            (2.15, [background]),
+            (2.2, [returned]),
+            (2.25, [returned]),
+            (2.3, [returned]),
+        ],
+        video=video,
+    )
+    assert [r[2] for r in records] == [clipped, None, None, None, None, None, None, returned]
+    assert records[-1][5] == "재획득"
+
+
 def test_yolo_geometry_change_discards_partial_confirmation(run_yolo_frames):
     box = (10, 10, 30, 30, 0.9)
     records, _ = run_yolo_frames(
@@ -2358,6 +2734,7 @@ def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     model.touch()
     app.model.set(str(model))
     app.device.set("mps")
+    app.flip_vertical.set(True)
     dialogs = SimpleNamespace(
         askopenfilename=lambda **kw: str(video),
         askdirectory=lambda **kw: pytest.fail("Video tests must never extract learning data"),
@@ -2381,7 +2758,10 @@ def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     monkeypatch.setattr(gui, "CameraSession", start)
     app.test_video()
     assert calls == [
-        ((None, str(model.resolve()), 0.25, "mps", (1920, 1080)), {"video_path": video.resolve()})
+        (
+            (None, str(model.resolve()), 0.25, "mps", (1920, 1080)),
+            {"video_path": video.resolve(), "flip_vertical": True},
+        )
     ]
     assert not errors and app.mode.get() == "YOLO 자동 검출"
     assert app.collect_button.options["state"] == "disabled"
@@ -2412,6 +2792,9 @@ def video_runtime(monkeypatch, tmp_path):
 
     class Frame:
         shape = (100, 100, 3)
+
+        def __init__(self, rows=("top", "bottom")):
+            self.rows = rows
 
         def __getitem__(self, _slices):
             return self
@@ -2444,6 +2827,8 @@ def video_runtime(monkeypatch, tmp_path):
 
     def predict(frame, **kwargs):
         assert kwargs["device"] == "mps" and kwargs["classes"] == [0]
+        rows = ("bottom", "top") if control.get("flip_vertical") else ("top", "bottom")
+        assert frame.rows == rows
         if control.get("inference_error"):
             raise ValueError("inference failed")
         offset[0] += 0.7  # Offline inference may exceed the live camera expiry cutoff.
@@ -2457,10 +2842,16 @@ def video_runtime(monkeypatch, tmp_path):
             )
         ]
 
+    def flip(frame, axis):
+        assert axis == 0
+        return Frame(frame.rows[::-1])
+
     monkeypatch.setitem(
         sys.modules,
         "cv2",
-        SimpleNamespace(VideoCapture=Capture, CAP_PROP_FRAME_COUNT=1, CAP_PROP_POS_MSEC=2),
+        SimpleNamespace(
+            VideoCapture=Capture, CAP_PROP_FRAME_COUNT=1, CAP_PROP_POS_MSEC=2, flip=flip
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -2477,7 +2868,14 @@ def video_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(gui, "FrameCollector", lambda *a: pytest.fail("No training side effects"))
 
     def launch():
-        session = CameraSession(None, str(model), 0.25, "mps", video_path=video)
+        session = CameraSession(
+            None,
+            str(model),
+            0.25,
+            "mps",
+            video_path=video,
+            flip_vertical=control.get("flip_vertical", False),
+        )
         sessions.append(session)
         return session
 
@@ -2489,13 +2887,17 @@ def video_runtime(monkeypatch, tmp_path):
         assert not session.alive()
 
 
+@pytest.mark.parametrize("flip_vertical", [False, True])
 def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_display(
     video_runtime,
+    flip_vertical,
 ):
     launch, control = video_runtime
+    control["flip_vertical"] = flip_vertical
     session = launch()
     first = session.results.get(timeout=2)
     assert len(first) == 8 and first[2] == (10, 10, 30, 30, 0.9)
+    assert first[6].rows == (("bottom", "top") if flip_vertical else ("top", "bottom"))
     assert first[7] == (0.0, 1)
     session.paused.set()
     session.video_displayed = first[0]
@@ -2516,7 +2918,9 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
     assert not session.alive() and control["released"] == 1 and session.errors.empty()
     assert record["settings"]["video_complete"] is True
     assert [r["video_time_s"] for r in record["frames"]] == [0, 0.001, 0.002]
-    assert all(r["processed"] and r["box"] == [10, 10, 30, 30] for r in record["frames"])
+    expected_box = [10, 70, 30, 90] if flip_vertical else [10, 10, 30, 30]
+    assert all(r["processed"] and r["box"] == expected_box for r in record["frames"])
+    assert record["settings"]["flip_vertical"] is flip_vertical
     assert record["performance"]["counts"].get("stale_result", 0) == 0
     assert session.previews.empty() and session.collector is None
     with pytest.raises(ValueError, match="학습 수집과 별개"):
@@ -2525,6 +2929,7 @@ def test_video_pipeline_processes_every_frame_pauses_and_finishes_after_final_di
 
 def test_video_display_ack_wakes_immediately_and_stale_ack_cannot_skip_frame(monkeypatch, tmp_path):
     session = CameraSession.__new__(CameraSession)
+    session.serial_write_lock = threading.Lock()
     session.video_path, model = tmp_path / "video.mp4", tmp_path / "local.pt"
     session.video_path.write_bytes(b"synthetic video")
     model.write_bytes(b"synthetic weights")
@@ -2616,10 +3021,10 @@ def preview_poll(monkeypatch, camera_controls):
         drawMarker=Mock(),
         rectangle=Mock(),
         line=Mock(),
-        resize=Mock(return_value=frame),
+        resize=Mock(return_value=object()),
         cvtColor=Mock(return_value=frame),
         MARKER_CROSS=0,
-        INTER_AREA=0,
+        INTER_LINEAR=0,
         COLOR_BGR2RGB=0,
     )
     photo = Mock(side_effect=lambda image: object())
@@ -2692,9 +3097,122 @@ def test_poll_reuses_pixels_but_refreshes_status_metrics_and_timer(preview_poll)
     assert "150ms 전" in app.status.get() and app.processing_time.get() == "40ms"
     assert app.performance.get() != old_performance
     assert app.session.metrics.snapshot()["counts"]["display"] == 1
+    assert app.session.manual_displayed_at == 10.0
     assert app.root.after.call_count == 6
     assert all(1 <= call.args[0] <= 17 for call in app.root.after.call_args_list)
     assert all(call.args[1] == app.poll for call in app.root.after.call_args_list)
+
+
+@pytest.mark.parametrize("state", ["live", "resized", "source-resized", "stalled", "resumed"])
+def test_manual_drag_selects_only_the_freshly_displayed_frame(preview_poll, state):
+    from unittest.mock import MagicMock, Mock
+
+    app, original, now, cv2, _ = preview_poll
+    app.canvas.create_rectangle = Mock(return_value=1)
+    app.canvas.tag_lower = Mock()
+    app.canvas.focus_set = Mock()
+    pending_images, painted_images = [], []
+    app.canvas.create_image.side_effect = lambda *args, **kwargs: pending_images.append(app.frame)
+    app.canvas.update_idletasks = lambda: painted_images.append(pending_images.pop())
+    original_shape = (480, 640, 3) if state == "source-resized" else original.shape
+    original = MagicMock(shape=original_shape)
+    app.session.previews.get_nowait()
+    app.session.previews.put((now[0], original))
+    app.poll()
+    x, y = app.display_offset
+    scale = app.display_scale
+    app.begin_selection(SimpleNamespace(x=x + 20 * scale, y=y + 20 * scale))
+    app.canvas.focus_set.assert_called_once_with()
+
+    if state == "live":
+        for _ in range(4):
+            now[0] += 0.3
+            app.session.previews.put((now[0], original))
+            app.poll()
+    now[0] += 1.3 if state in ("stalled", "resumed") else 0.1
+    captured = now[0]
+    latest_shape = (479, 640, 3) if state == "source-resized" else original_shape
+    latest = MagicMock(shape=latest_shape)
+    template = SimpleNamespace(std=lambda: 20)
+    cv2.COLOR_BGR2GRAY = 6
+    cv2.cvtColor.side_effect = lambda image, code: template if code == 6 else original
+    if state != "stalled":
+        app.session.previews.put((captured, latest))
+        full_frame = (0, 0, latest_shape[1], latest_shape[0])
+        app.session.results.put(
+            (captured, latest_shape[:2], (10, 10, 30, 30, 0.9), 0.02, full_frame, "test")
+        )
+        if state == "resized":
+            app.canvas.winfo_width = lambda: 80
+        app.poll()
+        assert app.frame is latest
+    if state == "live":
+        assert app.canvas.delete.call_args.args == ("preview",)
+        assert app.canvas.tag_lower.call_args.args == ("preview",)
+        assert app.session.manual_displayed_at is None
+        # Mouse release can run before Tk's next idle redraw.
+        assert painted_images == [original] * 5 + [latest]
+        # A queued image the operator has not seen must not be used.
+        app.session.previews.put((captured + 0.01, original))
+        now[0] += 0.02
+
+    app.end_selection(SimpleNamespace(x=x + 50 * scale, y=y + 50 * scale))
+    assert app.drag_start is None
+    assert app.session.manual_target_lost
+    if state == "live":
+        assert app.session.selections.get_nowait() == (template, (20, 20, 50, 50), latest, captured)
+    else:
+        assert app.session.selections.empty()
+
+
+def test_small_preview_draws_crosshair_and_boxes_on_resized_frame(preview_poll):
+    from unittest.mock import call
+
+    app, frame, _, cv2, _ = preview_poll
+    app.canvas.winfo_width = lambda: 81
+    app.canvas.winfo_height = lambda: 50
+    captured, shape, box, processing, _, method = app.session.results.get_nowait()
+    app.session.results.put((captured, shape, box, processing, (0, 0, 80, 99), method))
+    app.poll()
+
+    frame.copy.assert_not_called()
+    preview = cv2.resize.return_value
+    cv2.resize.assert_called_once_with(frame, (81, 40), interpolation=cv2.INTER_LINEAR)
+    cv2.drawMarker.assert_called_once_with(
+        preview, (40, 20), (255, 255, 255), cv2.MARKER_CROSS, 8, 1
+    )
+    assert cv2.rectangle.call_args_list == [
+        call(preview, (0, 0), (32, 39), (255, 180, 0), 1),
+        call(preview, (4, 4), (12, 12), (80, 220, 80), 1),
+    ]
+    cv2.line.assert_called_once_with(preview, (40, 20), (8, 8), (80, 220, 80), 1)
+    cv2.cvtColor.assert_called_once_with(preview, cv2.COLOR_BGR2RGB)
+    assert app.display_offset == (0, 5)
+
+
+def test_poll_updates_performance_label_once_and_only_when_text_changes(preview_poll):
+    from unittest.mock import Mock
+
+    app, _, _, _, _ = preview_poll
+    app.performance.set = Mock(wraps=app.performance.set)
+    command = SimpleNamespace(state="TRACK", saturated=True, pan_deg=0.0, tilt_deg=0.0)
+    snapshot = Mock(side_effect=[command, command, None, command])
+    app.session.pan_tilt = SimpleNamespace(nominal_ticks=True, snapshot=snapshot)
+    collector = SimpleNamespace(samples=[], dropped=0, error=None)
+    app.session.collector = collector
+
+    app.poll()
+    snapshot.assert_called_once_with(blocking=False)
+    assert "모터 목표 TRACK" in app.performance.get()
+    assert "범위 제한" in app.performance.get() and "저장 큐 누락 0" in app.performance.get()
+    app.poll()
+    assert app.performance.set.call_count == 1
+    collector.dropped = 1
+    app.poll()
+    assert app.performance.set.call_count == 2 and "저장 큐 누락 1" in app.performance.get()
+    assert "모터 목표" not in app.performance.get()
+    app.poll()
+    assert "모터 목표 TRACK" in app.performance.get()
 
 
 @pytest.mark.parametrize("fps", [30, 60])
@@ -2770,10 +3288,11 @@ def test_poll_redraws_when_visible_content_changes(preview_poll, change):
     rectangles, lines = cv2.rectangle.call_count, cv2.line.call_count
     app.poll()
     assert photo.call_count == before + 1 and app.photo is not first_photo
-    assert frame.copy.call_count == cv2.resize.call_count == photo.call_count
+    assert cv2.resize.call_count == photo.call_count
     if change in ("loss", "clear", "expired"):
         assert cv2.rectangle.call_count == rectangles and cv2.line.call_count == lines
         assert app.observed.get() == "—  미관측"
+        assert app.session.manual_displayed_at is None
     if change == "size":
         assert app.display_offset == (0, 140)
     app.poll()
@@ -2790,6 +3309,10 @@ def test_poll_clears_stale_camera_and_renders_after_restart(preview_poll, monkey
     app.poll()
     assert app.frame is None and app.render_key is None
     assert "새 영상 대기" in app.status.get() and app.processing_time.get() == "—"
+    cleared = app.canvas.delete.call_count
+    now[0] += 0.03
+    app.poll()
+    assert app.canvas.delete.call_count == cleared
     session.previews.put((now[0], frame))
     app.poll()
     assert photo.call_count == 2
@@ -2801,7 +3324,7 @@ def test_poll_clears_stale_camera_and_renders_after_restart(preview_poll, monkey
     session.stop.clear()
     app.cameras["test"] = {"id": "test"}
     app.camera.set("test")
-    monkeypatch.setattr(gui, "CameraSession", lambda *a: session)
+    monkeypatch.setattr(gui, "CameraSession", lambda *args, **kwargs: session)
     monkeypatch.setitem(sys.modules, "tkinter", SimpleNamespace(messagebox=None))
     app.start()
     session.previews.put((now[0], frame))
@@ -2825,7 +3348,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     frame = SimpleNamespace(shape=(100, 100, 3))
     from unittest.mock import Mock
 
-    frame.copy = Mock(return_value=frame)
+    resize = Mock(return_value=object())
     app.canvas = SimpleNamespace(
         delete=lambda *a: None,
         winfo_width=lambda: 100,
@@ -2862,10 +3385,10 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         "cv2",
         SimpleNamespace(
             drawMarker=lambda *a: None,
-            resize=lambda *a, **kw: frame,
-            cvtColor=lambda *a: frame,
+            resize=resize,
+            cvtColor=lambda preview, *_: preview,
             MARKER_CROSS=0,
-            INTER_AREA=0,
+            INTER_LINEAR=0,
             COLOR_BGR2RGB=0,
         ),
     )
@@ -2880,7 +3403,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     app.poll()
     assert session.video_displayed == captured and app.frame is frame
     assert session.display_ack.is_set()
-    assert frame.copy.call_count == 1
+    assert resize.call_count == 1
     assert app.actual_resolution.get() == "100×100"
     assert app.processing_time.get() == "1000ms"
     assert app.observed.get() == "—  미관측"
@@ -2893,7 +3416,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
     session.paused.set()
     before_performance = app.performance.get()
     app.poll()
-    assert frame.copy.call_count == 1
+    assert resize.call_count == 1
     assert app.performance.get() != before_performance
     assert app.frame is frame and "일시정지" in app.status.get()
     assert app.run_state.get() == "●  일시정지"
@@ -2902,7 +3425,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         (captured + 1, (100, 100), None, 1.0, (0, 0, 100, 100), "YOLO", frame, (9.0, 2))
     )
     app.poll()
-    assert frame.copy.call_count == 2 and session.video_displayed == captured + 1
+    assert resize.call_count == 2 and session.video_displayed == captured + 1
     assert "9.00초" in app.capture_info.get() and "2/2프레임" in app.status.get()
     session.metrics.settings["video_complete"] = True
     session.stop.set()
@@ -3010,7 +3533,9 @@ def test_advanced_settings_toggle_and_summary_follow_values(camera_controls):
 
 def test_sidebar_switches_panels_without_stopping_active_session(camera_controls):
     app, shown = camera_controls, []
+    stopped = []
     app.session = object()
+    app.motor_panel = SimpleNamespace(stop=lambda: stopped.append(True))
     for name in ("tracking_panel", "learning_panel"):
         setattr(
             app,
@@ -3025,14 +3550,14 @@ def test_sidebar_switches_panels_without_stopping_active_session(camera_controls
     app.page.set("tracking")
     app.show_page()
     assert shown[-1] == "tracking_panel" and app.heading.get() == "드론 추적"
-    assert app.session is not None
+    assert app.session is not None and stopped == [True]
 
 
-def test_settings_unlock_restores_combobox_readonly_state(camera_controls):
+def test_settings_unlock_restores_picker_readonly_state(camera_controls):
     app = camera_controls
     entry, combo, button = (type(app.status)() for _ in range(3))
     entry.winfo_class = lambda: "TEntry"
-    combo.winfo_class = lambda: "TCombobox"
+    combo.winfo_class = lambda: "TSpinbox"
     button.winfo_class = lambda: "Radiobutton"
     app.settings_widgets, app.source_buttons = [entry, combo], [button]
     app.lock_settings(True)
@@ -3057,14 +3582,18 @@ def test_centered_preview_selection_uses_original_coordinates(monkeypatch, camer
     app.frame = Frame()
     app.display_offset, app.display_scale = (80, 40), 2
     app.last_display, app.drag_start, app.selection_time = 10.0, None, 0.0
+    monkeypatch.setattr("tools.camera_gui.time.monotonic", lambda: 10.02)
     app.session = SimpleNamespace(model_path=None, selections=queue.Queue(maxsize=1))
+    stopped = []
+    app.motor_panel = SimpleNamespace(stop_tilt_tracking=lambda: stopped.append(True))
     app.canvas.create_rectangle = lambda *a, **kw: 1
     monkeypatch.setitem(
         sys.modules, "cv2", SimpleNamespace(COLOR_BGR2GRAY=0, cvtColor=lambda a, b: a)
     )
     app.begin_selection(SimpleNamespace(x=70, y=60))
-    assert app.drag_start is None  # Letterbox margin is not part of the source image.
+    assert app.drag_start is None and not stopped  # Letterbox margin.
     app.begin_selection(SimpleNamespace(x=100, y=60))
+    assert app.session.manual_displayed_at is None and stopped == [True]
     app.end_selection(SimpleNamespace(x=180, y=120))
     selected = app.session.selections.get_nowait()
     assert selected[1] == (10, 10, 50, 40)
