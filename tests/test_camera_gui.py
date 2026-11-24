@@ -3079,7 +3079,7 @@ def test_poll_reuses_pixels_but_refreshes_status_metrics_and_timer(preview_poll)
     assert all(call.args[1] == app.poll for call in app.root.after.call_args_list)
 
 
-@pytest.mark.parametrize("state", ["live", "resized", "stalled"])
+@pytest.mark.parametrize("state", ["live", "resized", "source-resized", "stalled", "resumed"])
 def test_manual_drag_selects_only_the_freshly_displayed_frame(preview_poll, state):
     from unittest.mock import MagicMock, Mock
 
@@ -3090,7 +3090,8 @@ def test_manual_drag_selects_only_the_freshly_displayed_frame(preview_poll, stat
     pending_images, painted_images = [], []
     app.canvas.create_image.side_effect = lambda *args, **kwargs: pending_images.append(app.frame)
     app.canvas.update_idletasks = lambda: painted_images.append(pending_images.pop())
-    original = MagicMock(shape=original.shape)
+    original_shape = (480, 640, 3) if state == "source-resized" else original.shape
+    original = MagicMock(shape=original_shape)
     app.session.previews.get_nowait()
     app.session.previews.put((now[0], original))
     app.poll()
@@ -3099,32 +3100,41 @@ def test_manual_drag_selects_only_the_freshly_displayed_frame(preview_poll, stat
     app.begin_selection(SimpleNamespace(x=x + 20 * scale, y=y + 20 * scale))
     app.canvas.focus_set.assert_called_once_with()
 
-    now[0] += 1.3
+    if state == "live":
+        for _ in range(4):
+            now[0] += 0.3
+            app.session.previews.put((now[0], original))
+            app.poll()
+    now[0] += 1.3 if state in ("stalled", "resumed") else 0.1
     captured = now[0]
-    latest = MagicMock(shape=original.shape)
+    latest_shape = (479, 640, 3) if state == "source-resized" else original_shape
+    latest = MagicMock(shape=latest_shape)
     template = SimpleNamespace(std=lambda: 20)
     cv2.COLOR_BGR2GRAY = 6
     cv2.cvtColor.side_effect = lambda image, code: template if code == 6 else original
     if state != "stalled":
         app.session.previews.put((captured, latest))
+        full_frame = (0, 0, latest_shape[1], latest_shape[0])
         app.session.results.put(
-            (captured, original.shape[:2], (10, 10, 30, 30, 0.9), 0.02, None, "test")
+            (captured, latest_shape[:2], (10, 10, 30, 30, 0.9), 0.02, full_frame, "test")
         )
         if state == "resized":
             app.canvas.winfo_width = lambda: 80
         app.poll()
-        assert app.frame is latest and app.session.manual_displayed_at is None
+        assert app.frame is latest
     if state == "live":
         assert app.canvas.delete.call_args.args == ("preview",)
-        app.canvas.tag_lower.assert_called_once_with("preview")
+        assert app.canvas.tag_lower.call_args.args == ("preview",)
+        assert app.session.manual_displayed_at is None
         # Mouse release can run before Tk's next idle redraw.
-        assert painted_images == [original, latest]
+        assert painted_images == [original] * 5 + [latest]
         # A queued image the operator has not seen must not be used.
         app.session.previews.put((captured + 0.01, original))
         now[0] += 0.02
 
     app.end_selection(SimpleNamespace(x=x + 50 * scale, y=y + 50 * scale))
     assert app.drag_start is None
+    assert app.session.manual_target_lost
     if state == "live":
         assert app.session.selections.get_nowait() == (template, (20, 20, 50, 50), latest, captured)
     else:

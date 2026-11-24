@@ -2285,6 +2285,8 @@ class CameraGUI:
                             else "정지 · 카메라 해제 완료"
                         )
             else:
+                previous_display = getattr(self, "last_display", 0)
+                previous_frame = self.frame
                 try:
                     self.result = session.results.get_nowait()
                     if video_input:
@@ -2305,6 +2307,15 @@ class CameraGUI:
                 if self.frame is not None and (video_input or age <= MAX_AGE_S):
                     frame = self.frame
                     h, w = frame.shape[:2]
+                    if (
+                        self.drag_start is not None
+                        and previous_frame is not None
+                        and (
+                            now - previous_display > MAX_AGE_S or previous_frame.shape[:2] != (h, w)
+                        )
+                    ):
+                        self.drag_start = None
+                        self.canvas.delete("selection")
                     set_if_changed(self.actual_resolution, f"{w}×{h}")
                     paused = video_input and session.paused.is_set()
                     set_if_changed(self.run_state, "●  일시정지" if paused else "●  실행 중")
