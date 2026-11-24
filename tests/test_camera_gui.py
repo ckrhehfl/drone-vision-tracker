@@ -219,6 +219,8 @@ def camera_controls():
         setattr(app, name, Control(value))
     app.canvas = SimpleNamespace(
         delete=lambda *args: None,
+        focus_set=lambda: None,
+        update_idletasks=lambda: None,
         winfo_width=lambda: 640,
         winfo_height=lambda: 480,
         create_text=lambda *args, **kwargs: None,
@@ -3077,6 +3079,58 @@ def test_poll_reuses_pixels_but_refreshes_status_metrics_and_timer(preview_poll)
     assert all(call.args[1] == app.poll for call in app.root.after.call_args_list)
 
 
+@pytest.mark.parametrize("state", ["live", "resized", "stalled"])
+def test_manual_drag_selects_only_the_freshly_displayed_frame(preview_poll, state):
+    from unittest.mock import MagicMock, Mock
+
+    app, original, now, cv2, _ = preview_poll
+    app.canvas.create_rectangle = Mock(return_value=1)
+    app.canvas.tag_lower = Mock()
+    app.canvas.focus_set = Mock()
+    pending_images, painted_images = [], []
+    app.canvas.create_image.side_effect = lambda *args, **kwargs: pending_images.append(app.frame)
+    app.canvas.update_idletasks = lambda: painted_images.append(pending_images.pop())
+    original = MagicMock(shape=original.shape)
+    app.session.previews.get_nowait()
+    app.session.previews.put((now[0], original))
+    app.poll()
+    x, y = app.display_offset
+    scale = app.display_scale
+    app.begin_selection(SimpleNamespace(x=x + 20 * scale, y=y + 20 * scale))
+    app.canvas.focus_set.assert_called_once_with()
+
+    now[0] += 1.3
+    captured = now[0]
+    latest = MagicMock(shape=original.shape)
+    template = SimpleNamespace(std=lambda: 20)
+    cv2.COLOR_BGR2GRAY = 6
+    cv2.cvtColor.side_effect = lambda image, code: template if code == 6 else original
+    if state != "stalled":
+        app.session.previews.put((captured, latest))
+        app.session.results.put(
+            (captured, original.shape[:2], (10, 10, 30, 30, 0.9), 0.02, None, "test")
+        )
+        if state == "resized":
+            app.canvas.winfo_width = lambda: 80
+        app.poll()
+        assert app.frame is latest and app.session.manual_displayed_at is None
+    if state == "live":
+        assert app.canvas.delete.call_args.args == ("preview",)
+        app.canvas.tag_lower.assert_called_once_with("preview")
+        # Mouse release can run before Tk's next idle redraw.
+        assert painted_images == [original, latest]
+        # A queued image the operator has not seen must not be used.
+        app.session.previews.put((captured + 0.01, original))
+        now[0] += 0.02
+
+    app.end_selection(SimpleNamespace(x=x + 50 * scale, y=y + 50 * scale))
+    assert app.drag_start is None
+    if state == "live":
+        assert app.session.selections.get_nowait() == (template, (20, 20, 50, 50), latest, captured)
+    else:
+        assert app.session.selections.empty()
+
+
 def test_small_preview_draws_crosshair_and_boxes_on_resized_frame(preview_poll):
     from unittest.mock import call
 
@@ -3494,6 +3548,7 @@ def test_centered_preview_selection_uses_original_coordinates(monkeypatch, camer
     app.frame = Frame()
     app.display_offset, app.display_scale = (80, 40), 2
     app.last_display, app.drag_start, app.selection_time = 10.0, None, 0.0
+    monkeypatch.setattr("tools.camera_gui.time.monotonic", lambda: 10.02)
     app.session = SimpleNamespace(model_path=None, selections=queue.Queue(maxsize=1))
     stopped = []
     app.motor_panel = SimpleNamespace(stop_tilt_tracking=lambda: stopped.append(True))

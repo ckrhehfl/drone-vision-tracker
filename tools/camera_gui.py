@@ -2195,6 +2195,7 @@ class CameraGUI:
             ):
                 return
             self.interrupt_manual_tracking()
+            self.canvas.focus_set()
             self.drag_start = (event.x, event.y)
             self.canvas.delete("selection")
             self.selection = self.canvas.create_rectangle(
@@ -2206,14 +2207,22 @@ class CameraGUI:
             self.canvas.coords(self.selection, *self.drag_start, event.x, event.y)
 
     def end_selection(self, event):
-        if self.drag_start is None or self.frame is None or self.session is None:
+        if self.drag_start is None:
+            return
+        drag_x, drag_y = self.drag_start
+        self.drag_start = None
+        self.canvas.delete("selection")
+        if self.frame is None or self.session is None:
+            return
+        if not 0 <= time.monotonic() - self.last_display <= MAX_AGE_S:
+            self.status.set("새 영상이 표시되면 드론을 다시 지정하세요.")
             return
         import cv2
 
         x, y = self.display_offset
         start = (
-            (self.drag_start[0] - x) / self.display_scale,
-            (self.drag_start[1] - y) / self.display_scale,
+            (drag_x - x) / self.display_scale,
+            (drag_y - y) / self.display_scale,
         )
         end = ((event.x - x) / self.display_scale, (event.y - y) / self.display_scale)
         height, width = self.frame.shape[:2]
@@ -2228,8 +2237,6 @@ class CameraGUI:
                 put_latest(self.session.selections, (template, box, self.frame, self.last_display))
                 self.result = None
                 self.render_key = None
-        self.drag_start = None
-        self.canvas.delete("selection")
 
     def poll(self):
         self.finish_camera_refresh()
@@ -2265,6 +2272,7 @@ class CameraGUI:
                     self.set_observation("입력 종료")
                     self.frame = None
                     self.result = None
+                    self.drag_start = None
                     self.processing_time.set("—")
                     self.canvas.delete("all")
                     self.draw_empty_preview()
@@ -2276,7 +2284,7 @@ class CameraGUI:
                             if video_input
                             else "정지 · 카메라 해제 완료"
                         )
-            elif self.drag_start is None:
+            else:
                 try:
                     self.result = session.results.get_nowait()
                     if video_input:
@@ -2315,8 +2323,10 @@ class CameraGUI:
                             and self.result[1] == (h, w)
                             else None
                         )
-                    else:
+                    elif self.drag_start is None:
                         observation = observation_for_preview(self.result, captured, (h, w), now)
+                    else:
+                        observation = None
                     detection = observation[2] if observation else None
                     set_if_changed(
                         self.processing_time,
@@ -2394,15 +2404,24 @@ class CameraGUI:
                             cv2.line(preview, crosshair, preview_point(center), (80, 220, 80), 1)
                         rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
                         self.photo = ImageTk.PhotoImage(Image.fromarray(rgb))
-                        self.canvas.delete("all")
-                        self.display_scale = scale
-                        self.display_offset = (
+                        offset = (
                             (canvas_size[0] - size[0]) // 2,
                             (canvas_size[1] - size[1]) // 2,
                         )
+                        if self.drag_start is not None and (
+                            scale != self.display_scale or offset != self.display_offset
+                        ):
+                            self.drag_start = None
+                        self.canvas.delete("all" if self.drag_start is None else "preview")
+                        self.display_scale, self.display_offset = scale, offset
                         self.canvas.create_image(
-                            *self.display_offset, anchor="nw", image=self.photo
+                            *offset, anchor="nw", image=self.photo, tags="preview"
                         )
+                        if self.drag_start is not None:
+                            self.canvas.tag_lower("preview")
+                        if not session.model_path:
+                            # Paint the selected frame before Tk can process a mouse release.
+                            self.canvas.update_idletasks()
                         self.render_key = render_key
                         session.metrics.displayed(captured, time.monotonic())
                     if not session.model_path:
@@ -2429,6 +2448,7 @@ class CameraGUI:
                         self.status.set(f"{info}{processing} · 영상 {age * 1000:.0f}ms")
                 elif self.frame is not None:
                     self.frame = None
+                    self.drag_start = None
                     self.canvas.delete("all")
                     self.set_observation("새 영상 대기")
                     self.run_state.set("●  입력 대기")
