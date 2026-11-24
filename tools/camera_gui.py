@@ -264,8 +264,8 @@ def color_mask(frame, signature):
     )
 
 
-def match_features(frame, template, threshold, mask):
-    """Recover rotated/scaled appearances only with distributed geometric agreement."""
+def match_features(frame, template, threshold, mask, frame_features=None):
+    """Match distributed features, optionally reusing a cache for this frame and mask."""
     import cv2
 
     if min(template.shape[:2]) < 32:
@@ -274,8 +274,13 @@ def match_features(frame, template, threshold, mask):
     source, descriptors = orb.detectAndCompute(template, None)
     if descriptors is None or len(source) < 8:
         return None
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    targets, target_descriptors = orb.detectAndCompute(gray, mask)
+    if frame_features:
+        targets, target_descriptors = frame_features[0]
+    else:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        targets, target_descriptors = orb.detectAndCompute(gray, mask)
+        if frame_features is not None:
+            frame_features.append((targets, target_descriptors))
     if target_descriptors is None or len(targets) < 8:
         return None
     pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(descriptors, target_descriptors, k=2)
@@ -946,11 +951,14 @@ class CameraSession:
                                 if recent_template is template
                                 else (template, recent_template)
                             )
+                            frame_features = []
                             # Original geometry avoids box inflation after rotated crops.
                             for reference in references:
                                 detection = verify_appearance(
                                     frame,
-                                    match_features(frame, reference, self.threshold, mask),
+                                    match_features(
+                                        frame, reference, self.threshold, mask, frame_features
+                                    ),
                                     signature,
                                 )
                                 if detection is not None:
