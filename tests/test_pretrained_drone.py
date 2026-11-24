@@ -9,6 +9,18 @@ import pytest
 import tools.pretrained_drone as pretrained
 
 
+def test_field_default_requires_the_pinned_weights(tmp_path, monkeypatch):
+    weights = tmp_path / pretrained.FIELD_MODEL.name
+    expected = b"field checkpoint fixture"
+    monkeypatch.setattr(pretrained, "FIELD_MODEL_SHA256", hashlib.sha256(expected).hexdigest())
+
+    assert pretrained.installed_field_model(weights) is None
+    weights.write_bytes(expected)
+    assert pretrained.installed_field_model(weights) == weights.resolve()
+    weights.write_bytes(b"different checkpoint")
+    assert pretrained.installed_field_model(weights) is None
+
+
 class Values(list):
     def copy_(self, values):
         self[:] = values

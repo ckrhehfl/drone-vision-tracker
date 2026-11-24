@@ -1,4 +1,4 @@
-"""Install a pinned Seraphim-trained quadcopter detector; never train or open a camera."""
+"""Check local detector weights and install the pinned public Seraphim detector."""
 
 import argparse
 import json
@@ -16,6 +16,18 @@ SOURCE_URL = f"https://huggingface.co/{REPOSITORY}/resolve/{REVISION}/best.pt"
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "models/local/seraphim-yolov8n"
 SOURCE = ROOT / "artifacts/seraphim-model/source.pt"
+FIELD_MODEL = ROOT / "models/local/field-backlight-20261124/field-backlight-20261124.pt"
+FIELD_MODEL_SHA256 = "642b84816bc0394156ae0c5b638d30584146f698ff76e6662f7f480b132317dc"
+
+
+def installed_field_model(path=FIELD_MODEL):
+    """Use only the reviewed local field checkpoint as a default."""
+    try:
+        if path.is_file() and sha256(path) == FIELD_MODEL_SHA256:
+            return path.resolve()
+    except OSError:
+        pass
+    return None
 
 
 def installed_model(root=MODEL_DIR):

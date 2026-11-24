@@ -12,7 +12,7 @@ from pathlib import Path
 
 from tools.frame_collection import FrameCollector
 from tools.pan_tilt import DEFAULT_MAX_FRAME_AGE_S, PanTiltController
-from tools.pretrained_drone import installed_model
+from tools.pretrained_drone import installed_field_model, installed_model
 from tools.tracking_metrics import (
     SessionMetrics,
     evaluate,
@@ -21,6 +21,8 @@ from tools.tracking_metrics import (
 )
 
 MAX_AGE_S = 0.5  # Preview cutoff, not the project's 100 ms control performance target.
+PANEL_SCROLL_IDLE_S = 0.12
+SCROLL_PREVIEW_INTERVAL_S = 1 / 30
 MANUAL_MODEL = (
     Path(__file__).resolve().parents[1]
     / "models/local/vittrack/object_tracking_vittrack_2023sep.onnx"
@@ -1121,6 +1123,7 @@ class CameraGUI:
         self.video_results = queue.Queue(maxsize=1)
         self.drag_start, self.selection, self.photo = None, None, None
         self.render_key = None
+        self.panel_scroll_until = self.next_scroll_preview = 0.0
         self.result, self.selection_time = None, 0.0
         self.video_progress = (0.0, 0)
         self.metrics = None
@@ -1132,7 +1135,7 @@ class CameraGUI:
         self.cameras = {}
         self.settings_widgets = []
         self.mode_buttons = []
-        default_model = installed_model()
+        default_model = installed_field_model() or installed_model()
         self.camera = tk.StringVar()
         self.source = tk.StringVar(value="camera")
         self.page = tk.StringVar(value="tracking")
@@ -1292,17 +1295,13 @@ class CameraGUI:
             panel_container, width=318, background="#f7f9fc", highlightthickness=0
         )
         self.panel_view.pack(side="left", fill="both", expand=True, padx=(0, 8))
-        scrollbar = ttk.Scrollbar(panel_container, command=self.panel_view.yview)
+        scrollbar = ttk.Scrollbar(panel_container, command=self.scroll_panel)
         scrollbar.pack(side="right", fill="y")
         self.panel_view.configure(yscrollcommand=scrollbar.set)
         panel_stack = ttk.Frame(self.panel_view)
         panel_window = self.panel_view.create_window(0, 0, window=panel_stack, anchor="nw")
-        panel_stack.bind(
-            "<Configure>",
-            lambda event: self.panel_view.configure(
-                width=panel_stack.winfo_reqwidth(), scrollregion=self.panel_view.bbox("all")
-            ),
-        )
+        self.panel_layout = None
+        panel_stack.bind("<Configure>", lambda event: self.update_panel_layout(panel_stack))
         self.panel_view.bind(
             "<Configure>",
             lambda event: self.panel_view.itemconfigure(panel_window, width=event.width),
@@ -1634,9 +1633,20 @@ class CameraGUI:
         panel.grid(row=0, column=0, sticky="new")
         self.panel_view.yview_moveto(0)
 
+    def scroll_panel(self, *args):
+        self.panel_view.yview(*args)
+        self.panel_scroll_until = time.monotonic() + PANEL_SCROLL_IDLE_S
+
     def scroll_controls(self, event):
-        self.panel_view.yview_scroll(-1 if event.num == 4 or event.delta > 0 else 1, "units")
+        self.scroll_panel("scroll", -1 if event.num == 4 or event.delta > 0 else 1, "units")
         return "break"
+
+    def update_panel_layout(self, panel):
+        width, region = panel.winfo_reqwidth(), self.panel_view.bbox("all")
+        if (width, region) != self.panel_layout:
+            # Scrolling moves the embedded panel and also emits Configure events.
+            self.panel_view.configure(width=width, scrollregion=region)
+            self.panel_layout = width, region
 
     def update_advanced_summary(self, *_args):
         self.advanced_summary.set(
@@ -2110,6 +2120,13 @@ class CameraGUI:
                 self.status.set(error)
             except queue.Empty:
                 pass
+            now = time.monotonic()
+            refresh_preview = (
+                video_input
+                or now >= self.panel_scroll_until
+                or now >= self.next_scroll_preview
+                or self.preview_fps.get() == "30"
+            )
             if session.stop.is_set():
                 if not session.alive():
                     session.finish()
@@ -2142,7 +2159,9 @@ class CameraGUI:
                             if video_input
                             else "정지 · 카메라 해제 완료"
                         )
-            elif self.drag_start is None:
+            elif self.drag_start is None and refresh_preview:
+                # Advance the preview frame only when its image can be drawn.
+                self.next_scroll_preview = now + SCROLL_PREVIEW_INTERVAL_S
                 try:
                     self.result = session.results.get_nowait()
                     if video_input:
