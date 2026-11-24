@@ -1013,8 +1013,8 @@ def test_manual_worker_reacquires_after_leaving_frame(
             return (*returned_box, 0.95)
         return None
 
-    def features(frame, sample, *args):
-        feature_searches.append((frame, sample))
+    def features(frame, sample, threshold, mask, frame_features):
+        feature_searches.append((frame, sample, frame_features))
         return (
             (*returned_box, 0.95)
             if return_pose == "features" and frame.name == "return" and sample is initial
@@ -1052,8 +1052,18 @@ def test_manual_worker_reacquires_after_leaving_frame(
         call[2:] == (0.8, (0, 0, 1920, 1080), {"fast": True, "unique": True}) for call in returning
     )
     assert not any(call[0] is frames[6] for call in searches)
+    first_miss, second_miss = (
+        [(sample, cache) for frame, sample, cache in feature_searches if frame is absent]
+        for absent in frames[1:3]
+    )
+    for attempts in (first_miss, second_miss):
+        assert [sample for sample, cache in attempts] == [initial, recent]
+        assert attempts[0][1] is attempts[1][1]
+    assert first_miss[0][1] is not second_miss[0][1]
     if return_pose == "features":
-        assert [sample for frame, sample in feature_searches if frame is frames[3]] == [initial]
+        assert [sample for frame, sample, cache in feature_searches if frame is frames[3]] == [
+            initial
+        ]
 
 
 @pytest.mark.parametrize("invalid", ["edge", "flat", "stale"])
@@ -1190,6 +1200,7 @@ def test_color_anchor_rejects_background_and_invalid_distance(monkeypatch, dista
         "turn",
         "few",
         "descriptors",
+        "scene_descriptors",
         "ambiguous",
         "duplicate",
         "outliers",
@@ -1214,11 +1225,17 @@ def test_global_features_require_unique_distributed_geometry(monkeypatch, failur
     if failure == "cluster":
         points = [(20 + i, 20 + i) for i in range(8)]
     keys = [SimpleNamespace(pt=p) for p in points]
-    calls = []
+    calls, conversions = [], []
 
     def detect(image, mask):
         calls.append(mask)
-        return keys, None if failure == "descriptors" else "descriptors"
+        if failure == "descriptors" or (failure == "scene_descriptors" and mask is not None):
+            return keys, None
+        return keys, "descriptors"
+
+    def convert(image, code):
+        conversions.append((image, code))
+        return image
 
     pairs = [
         [
@@ -1255,7 +1272,7 @@ def test_global_features_require_unique_distributed_geometry(monkeypatch, failur
         THRESH_BINARY=0,
         RANSAC=8,
         ORB_create=lambda **kwargs: SimpleNamespace(detectAndCompute=detect),
-        cvtColor=lambda image, code: image,
+        cvtColor=convert,
         calcBackProject=lambda *args: "projection",
         threshold=lambda *args: (1, "color mask"),
         BFMatcher=lambda norm: SimpleNamespace(knnMatch=lambda *args, **kwargs: pairs),
@@ -1266,18 +1283,25 @@ def test_global_features_require_unique_distributed_geometry(monkeypatch, failur
         ),
     )
     monkeypatch.setitem(sys.modules, "cv2", cv)
-    result = match_features(
-        SimpleNamespace(shape=(600, 1000)), SimpleNamespace(shape=(100, 100)), 0.65, "color mask"
-    )
+    frame = SimpleNamespace(shape=(600, 1000))
+    frame_features = []
     expected = (200, 200, 300, 300, 1.0) if failure is None else None
     if failure == "turn":
         expected = (300, 200, 350, 320, 1.0)
-    if expected is None:
-        assert result is None
+    for _ in range(2):
+        result = match_features(
+            frame, SimpleNamespace(shape=(100, 100)), 0.65, "color mask", frame_features
+        )
+        if expected is None:
+            assert result is None
+        else:
+            assert result == pytest.approx(expected)
+    if failure == "descriptors":
+        assert calls == [None, None]
+        assert not conversions
     else:
-        assert result == pytest.approx(expected)
-    if failure != "descriptors":
-        assert calls == [None, "color mask"]
+        assert calls == [None, "color mask", None]
+        assert conversions == [(frame, cv.COLOR_BGR2GRAY)]
     assert match_features(None, SimpleNamespace(shape=(20, 20)), 0.65, "color mask") is None
 
 
