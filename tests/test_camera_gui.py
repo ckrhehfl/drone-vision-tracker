@@ -130,9 +130,12 @@ def camera_controls():
     app.settings_widgets, app.source_buttons = [], []
     app.mode_buttons = []
     app.panel_view = SimpleNamespace(yview_moveto=lambda value: None)
+    app.panel_layout = None
     app.video_path = None
     app.display_offset, app.display_scale = (0, 0), 1.0
     app.render_key = None
+    app.panel_scroll_until = app.next_scroll_preview = 0.0
+    app.drag_start = None
     app.next_poll = 0.0
     for name in (
         "camera",
@@ -178,6 +181,29 @@ def camera_controls():
         create_text=lambda *args, **kwargs: None,
     )
     return app
+
+
+def test_panel_layout_updates_only_when_panel_dimensions_change(camera_controls):
+    from unittest.mock import Mock, call
+
+    app = camera_controls
+    app.panel_view.bbox = Mock(return_value=(0, 0, 368, 1100))
+    app.panel_view.configure = Mock()
+    panel = SimpleNamespace(winfo_reqwidth=Mock(return_value=368))
+
+    app.update_panel_layout(panel)
+    for _ in range(4):
+        app.update_panel_layout(panel)
+    panel.winfo_reqwidth.return_value = 390
+    app.update_panel_layout(panel)
+    app.panel_view.bbox.return_value = (0, 0, 390, 1430)
+    app.update_panel_layout(panel)
+
+    assert app.panel_view.configure.call_args_list == [
+        call(width=368, scrollregion=(0, 0, 368, 1100)),
+        call(width=390, scrollregion=(0, 0, 368, 1100)),
+        call(width=390, scrollregion=(0, 0, 390, 1430)),
+    ]
 
 
 @pytest.mark.parametrize("mode,expected", [("수동 지정", "0.65"), ("YOLO 자동 검출", "0.25")])
@@ -2739,6 +2765,60 @@ def test_preview_overrun_keeps_one_timer_and_resumes_without_a_catchup_burst(pre
     assert 15 <= app.root.after.call_args.args[0] <= 17
 
 
+@pytest.mark.parametrize("fps", [30, 60])
+def test_panel_scroll_limits_only_live_preview_until_input_stops(preview_poll, fps):
+    from unittest.mock import Mock, call
+
+    app, _, now, _, photo = preview_poll
+    app.panel_view.yview = Mock()
+    app.preview_fps.set(str(fps))
+    app.poll()
+
+    now[0] = 10.001
+    app.scroll_panel("moveto", "0.8")
+    assert app.scroll_controls(SimpleNamespace(num=4, delta=0)) == "break"
+    assert app.panel_view.yview.call_args_list == [
+        call("moveto", "0.8"),
+        call("scroll", -1, "units"),
+    ]
+
+    next_frame = SimpleNamespace(shape=(100, 200, 3))
+    next_frame.copy = Mock(return_value=next_frame)
+    now[0] = 10.017 if fps == 60 else 10.034
+    app.session.previews.put((now[0], next_frame))
+    app.poll()
+    if fps == 60:
+        assert app.root.after.call_count == 2
+        assert photo.call_count == 1 and app.frame is not next_frame
+        assert app.session.previews.qsize() == 1
+        now[0] = 10.034
+        app.poll()
+    assert photo.call_count == 2 and app.frame is next_frame
+
+    before = photo.call_count
+    now[0] = 10.112
+    app.session.previews.put((now[0], next_frame))
+    app.poll()
+    now[0] = 10.128
+    app.session.previews.put((now[0], next_frame))
+    app.poll()
+    assert photo.call_count == before + 2
+
+
+def test_panel_scroll_preserves_frozen_preview_during_manual_selection(preview_poll):
+    app, frame, now, _, photo = preview_poll
+    app.poll()
+    app.drag_start = (10, 10)
+    now[0] += 0.05
+    app.panel_scroll_until = now[0] + 0.1
+    app.session.previews.put((now[0], frame))
+
+    app.poll()
+
+    assert photo.call_count == 1
+    assert app.session.previews.qsize() == 1
+
+
 @pytest.mark.parametrize("change", ["frame", "box", "region", "size", "loss", "clear", "expired"])
 def test_poll_redraws_when_visible_content_changes(preview_poll, change):
     app, frame, now, cv2, photo = preview_poll
@@ -2807,6 +2887,7 @@ def test_poll_clears_stale_camera_and_renders_after_restart(preview_poll, monkey
     session.previews.put((now[0], frame))
     app.poll()
     assert photo.call_count == 3
+    app.panel_scroll_until = app.next_scroll_preview = now[0] + 0.1
     session.errors.put("입력 오류")
     session.metrics.fail("입력 오류")
     app.poll()
@@ -2889,6 +2970,7 @@ def test_video_poll_keeps_exact_frame_while_paused_and_restores_controls_at_eof(
         assert ("대상 소실" if method == "재검색" else method) in app.observation_state.get()
     # The next frame is in inference; its capture progress must not relabel the visible frame.
     session.video_timestamp = 9.0
+    app.panel_scroll_until = app.next_scroll_preview = captured + 101
     metrics.capture(captured + 1, frame.shape, video_time_s=9.0)
     session.paused.set()
     before_performance = app.performance.get()

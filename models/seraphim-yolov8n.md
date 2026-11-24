@@ -37,8 +37,10 @@
 ## GUI에서 사용
 
 GUI를 종료하고 `드론 카메라 실행.command`로 다시 연다. 설치 기록과 가중치 해시가 일치하면
-기본값이 `YOLO 자동 검출`, 해당 `best.pt`, 임계값 `0.25`가 된다. 카메라는 시작 버튼으로 켠다.
-설치가 없거나 손상됐다면 기존 수동 지정으로 시작한다. 인물 시험은 `수동 지정`을 선택한다.
+`YOLO 자동 검출`, 해당 `best.pt`, 임계값 `0.25`를 기본값으로 사용한다. 설치가 검증된
+[현장 추가 학습 모델](field-backlight-20261124.md)이 있으면 그 파일이 우선한다.
+카메라는 시작 버튼으로 켠다. 사용할 모델이 없으면 수동 지정으로 시작한다.
+인물 시험은 `수동 지정`을 선택한다.
 방식을 바꾸면 수동 임계값은 `0.65`, YOLO는 `0.25`로 설정되며 사용자가 다시 조정할 수 있다.
 가중치가 학습한 대상은 쿼드콥터 범주이며 특정 드론 개체의 신원 판별 모델이 아니다.
 
@@ -47,8 +49,8 @@ GUI를 종료하고 `드론 카메라 실행.command`로 다시 연다. 설치 �
 검수한 촬영 자료가 준비되면 [재학습 안내](../docs/retraining.md)에 따라 새 데이터 버전을 만든다.
 초기 `--model`에 설치된 `best.pt`를 지정하고 새로운 run 폴더로 학습한다.
 원본 모델을 덮어쓰지 않으며, 같은 validation에서 설치 모델과 새 모델을 비교할 수 있다.
-GUI의 `best.pt 선택`으로 새 가중치를 사용한다. 다음 GUI 실행 기본값은 설치 모델이므로
-추가 학습본을 쓰려면 해당 파일을 다시 선택한다.
+그 밖의 가중치는 GUI의 `best.pt 선택`으로 사용한다. GUI를 다시 열면 해시가 검증된
+기본 모델로 돌아간다.
 
 ```bash
 .venv/bin/python -m tools.train --data data/dataset/drone-retrain-v1/dataset.yaml --manifest data/dataset/drone-retrain-v1/manifest.json --model models/local/seraphim-yolov8n/best.pt --device mps --epochs 100 --imgsz 640 --batch 4 --output runs/train/drone-retrain-v1-mps
