@@ -4,9 +4,11 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from tools import vision_motor_panel
 from tools.pan_tilt import PanTiltCommand
 from tools.vision_motors import MotorProfile, MotorWorker, TicksLink, can_arm, nominal_angle
 
@@ -710,6 +712,62 @@ def test_manual_worker_jogs_only_tilt_one_tick_at_a_time(monkeypatch, stale, aut
     ]
     assert step_times[1] - step_times[0] >= 0.7
     assert port.writes[-1][0] == "DISARM"
+
+
+@pytest.mark.parametrize(("key", "virtual_key", "delta"), [("Up", 0x26, 1), ("Down", 0x28, -1)])
+@pytest.mark.parametrize("state_api", ["GetAsyncKeyState", "GetKeyState"])
+def test_windows_preheld_key_waits_for_release(monkeypatch, key, virtual_key, delta, state_api):
+    import ctypes
+
+    down = {virtual_key: -0x8000}
+    user32 = SimpleNamespace(
+        GetAsyncKeyState=Mock(return_value=1), GetKeyState=Mock(return_value=1)
+    )
+    getattr(user32, state_api).side_effect = lambda code: down.get(code, 1)
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+    monkeypatch.setattr(vision_motor_panel, "sys", SimpleNamespace(platform="win32"), raising=False)
+    errors = Mock()
+    monkeypatch.setitem(sys.modules, "tkinter", SimpleNamespace(messagebox=errors))
+
+    profile = MotorProfile(200, 210, 1, 2, manual_tilt=True)
+    link, port, clock = connected((247, 205), profile)
+    monkeypatch.setattr(time, "monotonic", clock)
+    session = source(model=None)
+    worker = MotorWorker("fake", profile)
+    worker.state = "READY"
+    panel = vision_motor_panel.MotorPanel.__new__(vision_motor_panel.MotorPanel)
+    panel.worker = worker
+    panel.get_session = lambda: session
+    panel.is_closing = lambda: False
+    panel.ready_to_move = Mock()
+    panel.ready_to_move.get.return_value = True
+    panel.jog_button = Mock()
+    panel.jog_button.focus_get.return_value = panel.jog_button
+    panel.jog_button.winfo_viewable.return_value = True
+    panel._pressed_keys, panel._release_jobs = set(), {}
+
+    panel.arm()
+    errors.showerror.assert_not_called()
+    assert worker.state == "ARMING"
+    worker._jog_confirmed = worker.ticks = link.request("ARM")
+    worker.session, worker.state = session, "ARMED"
+
+    event = SimpleNamespace(keysym=key)
+    for _ in range(2):  # Win32 repeats KeyPress without an intervening KeyRelease.
+        panel.jog_key(event)
+        worker._manual_cycle(link)
+    assert not any(row[0] == "SET_TICKS" for row in port.writes)
+    assert panel._pressed_keys == {key}
+
+    down.clear()
+    panel.release_key(event)
+    clear_key, released = panel.jog_button.after_idle.call_args.args
+    clear_key(released)
+    down[virtual_key] = -0x8000
+    panel.jog_key(event)
+    worker._manual_cycle(link)
+    assert [row[3:] for row in port.writes if row[0] == "SET_TICKS"] == [["247", str(205 + delta)]]
+    link.close()
 
 
 @pytest.mark.parametrize(

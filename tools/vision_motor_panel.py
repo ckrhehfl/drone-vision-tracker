@@ -1,5 +1,7 @@
 """Camera GUI controls for explicit motor connection and commissioning."""
 
+import sys
+
 from tools.vision_motors import MAX_TICKS, MIN_TICKS, MotorProfile, MotorWorker, can_arm
 
 AUTO_BOTH = "0·1번 자동 추종"
@@ -12,6 +14,24 @@ TILT_MODE_DEFAULTS = {
     AUTO_TILT: (str(MIN_TICKS), str(MAX_TICKS), "2", "틱 증가 → 위"),
     MANUAL_TILT: ("200", "210", "2", "틱 증가 → 위"),
 }
+
+
+def _held_windows_jog_keys():
+    if sys.platform != "win32":
+        return ()
+    from ctypes import c_int, c_short, windll
+
+    physical_state = windll.user32.GetAsyncKeyState
+    queued_state = windll.user32.GetKeyState
+    for get_state in (physical_state, queued_state):
+        get_state.argtypes = (c_int,)
+        get_state.restype = c_short
+    # The GUI thread may still see a held key while its release is queued.
+    return tuple(
+        key
+        for key, virtual_key in (("Up", 0x26), ("Down", 0x28))
+        if (physical_state(virtual_key) | queued_state(virtual_key)) & 0x8000
+    )
 
 
 class MotorPanel:
@@ -210,6 +230,7 @@ class MotorPanel:
         try:
             if self.worker is None or not self.ready_to_move.get():
                 raise ValueError("전원 인가 후 정착·운용 범위·방향을 확인하세요.")
+            held_keys = ()
             if self.worker.profile.manual_tilt:
                 self.jog_button.configure(state="normal")
                 self.jog_button.focus_set()
@@ -218,9 +239,11 @@ class MotorPanel:
                     or self.jog_button.focus_get() != self.jog_button
                 ):
                     raise ValueError("카메라 창을 활성화한 뒤 구동을 허가하세요.")
+                held_keys = _held_windows_jog_keys()
             self.worker.arm(self.get_session())
+            self._pressed_keys.update(held_keys)
             self.ready_to_move.set(False)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             self.jog_button.configure(state="disabled")
             messagebox.showerror("모터 구동 확인", str(exc))
 
