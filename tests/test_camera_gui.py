@@ -168,6 +168,7 @@ def camera_controls():
         ("threshold", "0.65"),
         ("model", ""),
         ("device", "cpu"),
+        ("use_coreml", False),
         ("resolution", "1920×1080"),
         ("preview_fps", "60"),
         ("source", "camera"),
@@ -254,6 +255,7 @@ def test_camera_start_passes_selected_identity_and_locks_menu(
     camera = {"id": "usb", "index": 7, "name": "Webcam"}
     app, calls, errors = camera_controls, [], []
     app.device.set(device)
+    app.use_coreml.set(True)  # Saved preference is only for automatic detection.
     app.preview_fps.set(fps)
     app.cameras["USB 카메라 · Webcam"] = camera
     app.camera.set("USB 카메라 · Webcam")
@@ -1897,7 +1899,7 @@ def test_yolo_unavailable_gpu_stops_before_model_loading(monkeypatch, device):
     assert session.metrics.error and device.upper() in session.metrics.error
 
 
-@pytest.mark.parametrize("device", ["mps", "cpu", "cuda"])
+@pytest.mark.parametrize("device", ["mps", "cpu", "cuda", "coreml"])
 def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, device):
     import time
 
@@ -1922,6 +1924,14 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
 
         return [SimpleNamespace(boxes=SimpleNamespace(xyxy=tensor(coords), conf=tensor([0.9])))]
 
+    detector = SimpleNamespace(task="detect", names={0: "drone"}, predict=predict)
+
+    def pytorch_detector(path):
+        if device == "coreml":
+            pytest.fail("Core ML must not load the PyTorch detector")
+        return detector
+
+    monkeypatch.setattr("tools.coreml_detector.CoreMLDetector", lambda path: detector)
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -1933,9 +1943,7 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     monkeypatch.setitem(
         sys.modules,
         "ultralytics",
-        SimpleNamespace(
-            YOLO=lambda path: SimpleNamespace(task="detect", names={0: "drone"}, predict=predict)
-        ),
+        SimpleNamespace(YOLO=pytorch_detector),
     )
     session = CameraSession.__new__(CameraSession)
     session.collector = None
@@ -2373,8 +2381,9 @@ def test_yolo_geometry_change_discards_partial_confirmation(run_yolo_frames):
     assert records[2][5] == records[3][5] == "재획득 확인 중 (1/3)"
 
 
+@pytest.mark.parametrize("use_coreml", [False, True])
 def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
-    monkeypatch, camera_controls, tmp_path
+    monkeypatch, camera_controls, tmp_path, use_coreml
 ):
     import tools.camera_gui as gui
 
@@ -2384,6 +2393,7 @@ def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     model.touch()
     app.model.set(str(model))
     app.device.set("mps")
+    app.use_coreml.set(use_coreml)
     dialogs = SimpleNamespace(
         askopenfilename=lambda **kw: str(video),
         askdirectory=lambda **kw: pytest.fail("Video tests must never extract learning data"),
@@ -2407,7 +2417,10 @@ def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     monkeypatch.setattr(gui, "CameraSession", start)
     app.test_video()
     assert calls == [
-        ((None, str(model.resolve()), 0.25, "mps", (1920, 1080)), {"video_path": video.resolve()})
+        (
+            (None, str(model.resolve()), 0.25, "coreml" if use_coreml else "mps", (1920, 1080)),
+            {"video_path": video.resolve()},
+        )
     ]
     assert not errors and app.mode.get() == "YOLO 자동 검출"
     assert app.collect_button.options["state"] == "disabled"

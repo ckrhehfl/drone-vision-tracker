@@ -96,6 +96,25 @@ Windows는 [Windows CUDA 안내](windows-cuda.md)의 가상환경에서
 Windows 카메라 목록은 장치 이름 탐색 대신 0~9번 선택지를 제공하며 실제 연결 여부는 시작할 때 확인한다.
 macOS 기본 장치는 `mps`, 다른 운영체제 기본값은 `cpu`다. NVIDIA GPU를 사용하려면 `cuda`를 선택한다.
 
+## Core ML 자동 검출
+
+Apple Silicon의 macOS 15 이상에서 다음 명령으로 Core ML을 준비한다. 두 번째 명령은
+앱과 같은 기본 드론 모델을 사용한다. 직접 고른 가중치는 `--model 경로/best.pt`로 지정한다.
+
+```bash
+.venv/bin/python -m pip install -r requirements-coreml-macos.txt
+.venv/bin/python -m tools.coreml_detector
+```
+
+메인 앱에서 **고급 설정 → 자동 검출에 Core ML 사용**을 체크한 뒤 **추적 시작**을 누른다.
+카메라 자동 검출과 동영상 테스트에 적용한다. **수동 지정**은 선택한 처리 장치로 ViT 추적을
+사용한다.
+
+변환은 신뢰하는 로컬 `.pt` 파일로 하며, 앱은 그 파일의 SHA-256에 맞는 변환본을
+`models/local/coreml`에서 찾는다. 추가 학습으로 모델 파일이 바뀌면 위 명령을 다시 실행한다.
+Core ML도 YOLO의 기존 크롭·직사각형 패딩·박스 좌표 복원을 사용한다. 변환 전과 후는 다른
+연산 정밀도를 사용하므로 실제 검출·지연은 같은 영상과 라벨에서 비교한다.
+
 ## 카메라 선택
 
 카메라 번호 대신 **카메라** 목록에서 장치 이름을 선택한다. 맥 내장 카메라가 연결되어 있으면

@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+from tools.coreml_detector import supports_coreml
 from tools.frame_collection import FrameCollector
 from tools.pan_tilt import DEFAULT_MAX_FRAME_AGE_S, PanTiltController
 from tools.pretrained_drone import installed_field_model, installed_model
@@ -718,13 +719,19 @@ class CameraSession:
         try:
             model, drone_classes = None, []
             if self.model_path:
-                import torch
-                from ultralytics import YOLO
+                if self.device == "coreml":
+                    from tools.coreml_detector import CoreMLDetector
 
-                from tools.train import select_device
+                    inference_device = self.device
+                    model = CoreMLDetector(self.model_path)
+                else:
+                    import torch
+                    from ultralytics import YOLO
 
-                inference_device = select_device(self.device, torch)
-                model = YOLO(self.model_path)
+                    from tools.train import select_device
+
+                    inference_device = select_device(self.device, torch)
+                    model = YOLO(self.model_path)
                 if model.task != "detect":
                     raise ValueError("드론 객체 검출용 모델을 선택하세요.")
                 drone_classes = [
@@ -1143,6 +1150,7 @@ class CameraGUI:
         self.model = tk.StringVar(value=str(default_model) if default_model else "")
         self.threshold = tk.StringVar(value="0.25" if default_model else "0.65")
         self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
+        self.use_coreml = tk.BooleanVar(value=False)
         self.resolution = tk.StringVar(value="1920×1080")
         self.preview_fps = tk.StringVar(value="60")
         self.video_name = tk.StringVar(value="테스트할 동영상을 선택하세요")
@@ -1156,7 +1164,15 @@ class CameraGUI:
         self.processing_time = tk.StringVar(value="—")
         self.observed = tk.StringVar(value="—  미관측")
         self.advanced_summary = tk.StringVar()
-        for variable in (self.threshold, self.device, self.resolution, self.preview_fps):
+        for variable in (
+            self.threshold,
+            self.device,
+            self.resolution,
+            self.preview_fps,
+            self.use_coreml,
+            self.mode,
+            self.source,
+        ):
             variable.trace_add("write", self.update_advanced_summary)
         self.update_advanced_summary()
 
@@ -1470,6 +1486,12 @@ class CameraGUI:
             )
             widget.grid(row=row, column=1, sticky="ew", pady=4)
             self.settings_widgets.append(widget)
+        if supports_coreml():
+            coreml = ttk.Checkbutton(
+                self.advanced_fields, text="자동 검출에 Core ML 사용", variable=self.use_coreml
+            )
+            coreml.grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
+            self.settings_widgets.append(coreml)
         ttk.Label(
             self.tracking_panel,
             text="수동 지정은 영상에서 대상을 드래그하세요.\n"
@@ -1649,8 +1671,10 @@ class CameraGUI:
             self.panel_layout = width, region
 
     def update_advanced_summary(self, *_args):
+        automatic = self.source.get() == "video" or self.mode.get() == "YOLO 자동 검출"
+        device = "Core ML" if automatic and self.use_coreml.get() else self.device.get().upper()
         self.advanced_summary.set(
-            f"임계값 {self.threshold.get()} · 장치 {self.device.get().upper()}\n"
+            f"임계값 {self.threshold.get()} · 장치 {device}\n"
             f"요청 해상도 {self.resolution.get()} · 화면 {self.preview_fps.get()}fps"
         )
 
@@ -1834,15 +1858,14 @@ class CameraGUI:
             self.selection_time = time.monotonic()
             self.canvas.delete("all")
             self.draw_empty_preview()
+            device = "coreml" if model and self.use_coreml.get() else self.device.get()
             if video_path is None:
-                self.session = CameraSession(
-                    camera, model, threshold, self.device.get(), resolution
-                )
+                self.session = CameraSession(camera, model, threshold, device, resolution)
             else:
                 if not video_path.is_file():
                     raise ValueError("기존 로컬 동영상 파일을 선택하세요.")
                 self.session = CameraSession(
-                    None, model, threshold, self.device.get(), resolution, video_path=video_path
+                    None, model, threshold, device, resolution, video_path=video_path
                 )
             self.metrics = self.session.metrics
             self.metrics.settings["preview_target_fps"] = int(self.preview_fps.get())
