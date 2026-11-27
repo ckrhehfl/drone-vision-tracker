@@ -2208,7 +2208,8 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(
     monkeypatch, device, height, width
 ):
     monkeypatch.setattr("tools.camera_gui.yolo_appearance", lambda *_: None)
-    import time
+    captured = 10.0
+    monkeypatch.setattr("tools.camera_gui.time.monotonic", lambda: captured)
 
     class Frame:
         def __init__(self, shape, offset=(0, 0)):
@@ -2264,11 +2265,12 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(
     count = 0
 
     def get(timeout):
-        nonlocal count
+        nonlocal captured, count
         count += 1
+        captured += 1 / 30
         if count == 4:
             session.stop.set()
-        return time.monotonic(), Frame((height, width, 3))
+        return captured, Frame((height, width, 3))
 
     session.frames = SimpleNamespace(get=get)
     session.process()

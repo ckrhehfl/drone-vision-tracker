@@ -245,7 +245,7 @@ class RecordingPage:
             defaultextension=".mp4",
             confirmoverwrite=False,
             filetypes=[("MP4 동영상", "*.mp4")],
-            initialfile=time.strftime("촬영-%Y%m%d-%H%M%S.mp4"),
+            initialfile=f"촬영-{time.strftime('%Y%m%d-%H%M%S')}.mp4",
         )
         if (
             not path
