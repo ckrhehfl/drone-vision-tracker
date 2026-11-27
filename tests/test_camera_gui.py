@@ -137,6 +137,7 @@ def camera_controls():
     app.panel_scroll_until = app.next_scroll_preview = 0.0
     app.drag_start = None
     app.next_poll = 0.0
+    app.coreml_overridden = False
     for name in (
         "camera",
         "status",
@@ -265,13 +266,18 @@ def test_camera_start_passes_selected_identity_and_locks_menu(
         SimpleNamespace(messagebox=SimpleNamespace(showerror=lambda *a: errors.append(a))),
     )
 
-    def start(*args):
-        calls.append(args)
+    def start(*args, **kwargs):
+        calls.append((args, kwargs))
         return SimpleNamespace(stop=threading.Event(), metrics=SessionMetrics())
 
     monkeypatch.setattr(gui, "CameraSession", start)
     app.start()
-    assert calls == [(camera, None, 0.65, device, (1920, 1080))]
+    assert calls == [
+        (
+            (camera, None, 0.65, device, (1920, 1080)),
+            {"video_path": None, "coreml_fallback_device": None},
+        )
+    ]
     assert errors == []
     assert app.metrics.settings["preview_target_fps"] == int(fps)
     assert all(
@@ -1899,9 +1905,23 @@ def test_yolo_unavailable_gpu_stops_before_model_loading(monkeypatch, device):
     assert session.metrics.error and device.upper() in session.metrics.error
 
 
-@pytest.mark.parametrize("device", ["mps", "cpu", "cuda", "coreml"])
-def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, device):
-    import time
+@pytest.mark.parametrize(
+    ("device", "coreml_failure", "fallback"),
+    [
+        ("mps", None, None),
+        ("cpu", None, None),
+        ("cuda", None, None),
+        ("coreml", None, None),
+        ("coreml", "load", "mps"),
+        ("coreml", "predict", "mps"),
+        ("coreml", "predict", None),
+    ],
+)
+def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(
+    monkeypatch, device, coreml_failure, fallback
+):
+    captured = 10.0
+    monkeypatch.setattr("tools.camera_gui.time.monotonic", lambda: captured)
 
     class Frame:
         def __init__(self, shape, offset=(0, 0)):
@@ -1914,7 +1934,7 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     calls = []
 
     def predict(crop, **kwargs):
-        assert kwargs["device"] == ("0" if device == "cuda" else device)
+        assert kwargs["device"] == ("0" if device == "cuda" else fallback or device)
         calls.append(crop.shape[:2])
         x, y = crop.offset
         coords = [[1600 - x, 800 - y, 1620 - x, 820 - y]]
@@ -1927,11 +1947,20 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     detector = SimpleNamespace(task="detect", names={0: "drone"}, predict=predict)
 
     def pytorch_detector(path):
-        if device == "coreml":
-            pytest.fail("Core ML must not load the PyTorch detector")
+        assert device != "coreml" or fallback is not None
         return detector
 
-    monkeypatch.setattr("tools.coreml_detector.CoreMLDetector", lambda path: detector)
+    def fail_coreml(*args, **kwargs):
+        raise RuntimeError("Core ML runtime unavailable")
+
+    def coreml_detector(path):
+        if coreml_failure == "load":
+            fail_coreml()
+        if coreml_failure == "predict":
+            return SimpleNamespace(task="detect", names={0: "drone"}, predict=fail_coreml)
+        return detector
+
+    monkeypatch.setattr("tools.coreml_detector.CoreMLDetector", coreml_detector)
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -1950,21 +1979,30 @@ def test_yolo_switches_to_native_crop_and_keeps_camera_coordinates(monkeypatch, 
     session.collection_lock = threading.Lock()
     session.metrics = SessionMetrics()
     session.model_path, session.threshold, session.device = "trusted-local.pt", 0.25, device
+    session.coreml_fallback_device = fallback
     session.stop = threading.Event()
     session.errors, session.selections = queue.Queue(), queue.Queue(maxsize=1)
     session.results = queue.Queue(maxsize=1)
     count = 0
 
     def get(timeout):
-        nonlocal count
+        nonlocal captured, count
         count += 1
+        captured += 1 / 30
         if count == 2:
             session.stop.set()
-        return time.monotonic(), Frame((1080, 1920, 3))
+        return captured, Frame((1080, 1920, 3))
 
     session.frames = SimpleNamespace(get=get)
     session.process()
+    if coreml_failure and fallback is None:
+        assert "Core ML runtime unavailable" in session.errors.get_nowait()
+        assert session.stop.is_set() and calls == []
+        return
     assert session.errors.empty(), list(session.errors.queue)
+    if fallback:
+        assert session.metrics.settings["device"] == fallback
+        assert session.metrics.settings["coreml_fallback"] == "Core ML runtime unavailable"
     assert calls == [(1080, 1920), (640, 640)]
     result = session.results.get_nowait()
     assert result[1] == (1080, 1920)
@@ -2381,9 +2419,26 @@ def test_yolo_geometry_change_discards_partial_confirmation(run_yolo_frames):
     assert records[2][5] == records[3][5] == "재획득 확인 중 (1/3)"
 
 
-@pytest.mark.parametrize("use_coreml", [False, True])
+def test_coreml_default_follows_prepared_model_until_user_changes_it(monkeypatch, camera_controls):
+    monkeypatch.setattr("tools.camera_gui.coreml_ready", lambda path: path == "prepared.pt")
+    app = camera_controls
+
+    app.model.set("prepared.pt")
+    app.update_coreml_default()
+    assert app.use_coreml.get()
+    app.model.set("unprepared.pt")
+    app.update_coreml_default()
+    assert not app.use_coreml.get()
+
+    app.keep_coreml_selection()
+    app.model.set("prepared.pt")
+    app.update_coreml_default()
+    assert not app.use_coreml.get()
+
+
+@pytest.mark.parametrize(("use_coreml", "explicit"), [(False, False), (True, True), (True, False)])
 def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
-    monkeypatch, camera_controls, tmp_path, use_coreml
+    monkeypatch, camera_controls, tmp_path, use_coreml, explicit
 ):
     import tools.camera_gui as gui
 
@@ -2394,6 +2449,9 @@ def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     app.model.set(str(model))
     app.device.set("mps")
     app.use_coreml.set(use_coreml)
+    if explicit:
+        app.keep_coreml_selection()
+    monkeypatch.setattr(gui, "coreml_ready", lambda _model: use_coreml)
     dialogs = SimpleNamespace(
         askopenfilename=lambda **kw: str(video),
         askdirectory=lambda **kw: pytest.fail("Video tests must never extract learning data"),
@@ -2419,7 +2477,10 @@ def test_video_test_starts_without_camera_and_cannot_collect_training_frames(
     assert calls == [
         (
             (None, str(model.resolve()), 0.25, "coreml" if use_coreml else "mps", (1920, 1080)),
-            {"video_path": video.resolve()},
+            {
+                "video_path": video.resolve(),
+                "coreml_fallback_device": "mps" if use_coreml and not explicit else None,
+            },
         )
     ]
     assert not errors and app.mode.get() == "YOLO 자동 검출"
@@ -2894,7 +2955,7 @@ def test_poll_clears_stale_camera_and_renders_after_restart(preview_poll, monkey
     session.stop.clear()
     app.cameras["test"] = {"id": "test"}
     app.camera.set("test")
-    monkeypatch.setattr(gui, "CameraSession", lambda *a: session)
+    monkeypatch.setattr(gui, "CameraSession", lambda *a, **kw: session)
     monkeypatch.setitem(sys.modules, "tkinter", SimpleNamespace(messagebox=None))
     app.start()
     session.previews.put((now[0], frame))

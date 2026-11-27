@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from tools.coreml_detector import supports_coreml
+from tools.coreml_detector import coreml_ready, supports_coreml
 from tools.frame_collection import FrameCollector
 from tools.pan_tilt import DEFAULT_MAX_FRAME_AGE_S, PanTiltController
 from tools.pretrained_drone import installed_field_model, installed_model
@@ -515,7 +515,15 @@ class CameraSession:
     pan_tilt: PanTiltController | None = None
 
     def __init__(
-        self, camera, model_path, threshold, device, resolution=(1920, 1080), *, video_path=None
+        self,
+        camera,
+        model_path,
+        threshold,
+        device,
+        resolution=(1920, 1080),
+        *,
+        video_path=None,
+        coreml_fallback_device=None,
     ):
         if video_path is not None and not model_path:
             raise ValueError("영상 테스트에는 drone 클래스가 있는 로컬 YOLO 모델이 필요합니다.")
@@ -527,6 +535,7 @@ class CameraSession:
         self.video_timestamp = 0.0
         self.video_progress = (0.0, 0)
         self.threshold, self.device = threshold, device
+        self.coreml_fallback_device = coreml_fallback_device
         self.resolution = resolution
         live_yolo = model_path is not None and video_path is None
         self.metrics = SessionMetrics(
@@ -714,33 +723,56 @@ class CameraSession:
                 Path(parent) / f"learning-{self.metrics.session_id}", self.metrics
             )
 
+    def load_yolo_detector(self):
+        if self.device == "coreml":
+            from tools.coreml_detector import CoreMLDetector
+
+            inference_device = self.device
+            model = CoreMLDetector(self.model_path)
+        else:
+            import torch
+            from ultralytics import YOLO
+
+            from tools.train import select_device
+
+            inference_device = select_device(self.device, torch)
+            model = YOLO(self.model_path)
+        if model.task != "detect":
+            raise ValueError("드론 객체 검출용 모델을 선택하세요.")
+        drone_classes = [key for key, name in model.names.items() if name.lower() == "drone"]
+        if not drone_classes:
+            raise ValueError("모델에 drone 클래스가 없습니다. 드론 학습 best.pt를 선택하세요.")
+        return model, inference_device, drone_classes
+
+    def fall_back_from_coreml(self, error):
+        if self.device != "coreml" or self.coreml_fallback_device is None or self.stop.is_set():
+            raise error
+        self.device = self.coreml_fallback_device
+        with self.metrics.lock:
+            self.metrics.settings.update(device=self.device, coreml_fallback=str(error))
+        return self.load_yolo_detector()
+
     def process(self):
         video_input = self.metrics.settings.get("source_type") == "video_test"
         try:
             model, drone_classes = None, []
             if self.model_path:
-                if self.device == "coreml":
-                    from tools.coreml_detector import CoreMLDetector
+                try:
+                    model, inference_device, drone_classes = self.load_yolo_detector()
+                except Exception as exc:
+                    model, inference_device, drone_classes = self.fall_back_from_coreml(exc)
 
-                    inference_device = self.device
-                    model = CoreMLDetector(self.model_path)
-                else:
-                    import torch
-                    from ultralytics import YOLO
+            def predict_boxes(crop):
+                return model.predict(
+                    crop,
+                    conf=self.threshold,
+                    classes=drone_classes,
+                    device=inference_device,
+                    imgsz=640,
+                    verbose=False,
+                )[0].boxes
 
-                    from tools.train import select_device
-
-                    inference_device = select_device(self.device, torch)
-                    model = YOLO(self.model_path)
-                if model.task != "detect":
-                    raise ValueError("드론 객체 검출용 모델을 선택하세요.")
-                drone_classes = [
-                    key for key, name in model.names.items() if name.lower() == "drone"
-                ]
-                if not drone_classes:
-                    raise ValueError(
-                        "모델에 drone 클래스가 없습니다. 드론 학습 best.pt를 선택하세요."
-                    )
+            detector_started = False
             template, recent_template, previous, geometry = None, None, None, None
             self.manual_engine = f"ViT {self.device.upper()} 준비 중" if model is None else "대기"
             tracker = create_manual_tracker(self.threshold, self.device) if model is None else None
@@ -998,15 +1030,14 @@ class CameraSession:
                 else:
                     x1, y1, x2, y2 = region
                     crop = frame[y1:y2, x1:x2]
-                    result = model.predict(
-                        crop,
-                        conf=self.threshold,
-                        classes=drone_classes,
-                        device=inference_device,
-                        imgsz=640,
-                        verbose=False,
-                    )[0]
-                    boxes = result.boxes
+                    try:
+                        boxes = predict_boxes(crop)
+                    except Exception as exc:
+                        if detector_started:
+                            raise
+                        model, inference_device, drone_classes = self.fall_back_from_coreml(exc)
+                        boxes = predict_boxes(crop)
+                    detector_started = True
                     detections = []
                     height, width = shape
                     for coords, confidence in zip(
@@ -1150,7 +1181,9 @@ class CameraGUI:
         self.model = tk.StringVar(value=str(default_model) if default_model else "")
         self.threshold = tk.StringVar(value="0.25" if default_model else "0.65")
         self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
-        self.use_coreml = tk.BooleanVar(value=False)
+        self.use_coreml = tk.BooleanVar(value=coreml_ready(default_model))
+        self.coreml_overridden = False
+        self.model.trace_add("write", self.update_coreml_default)
         self.resolution = tk.StringVar(value="1920×1080")
         self.preview_fps = tk.StringVar(value="60")
         self.video_name = tk.StringVar(value="테스트할 동영상을 선택하세요")
@@ -1488,7 +1521,10 @@ class CameraGUI:
             self.settings_widgets.append(widget)
         if supports_coreml():
             coreml = ttk.Checkbutton(
-                self.advanced_fields, text="자동 검출에 Core ML 사용", variable=self.use_coreml
+                self.advanced_fields,
+                text="자동 검출에 Core ML 사용",
+                variable=self.use_coreml,
+                command=self.keep_coreml_selection,
             )
             coreml.grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
             self.settings_widgets.append(coreml)
@@ -1669,6 +1705,13 @@ class CameraGUI:
             # Scrolling moves the embedded panel and also emits Configure events.
             self.panel_view.configure(width=width, scrollregion=region)
             self.panel_layout = width, region
+
+    def update_coreml_default(self, *_args):
+        if not self.coreml_overridden:
+            self.use_coreml.set(coreml_ready(self.model.get()))
+
+    def keep_coreml_selection(self):
+        self.coreml_overridden = True
 
     def update_advanced_summary(self, *_args):
         automatic = self.source.get() == "video" or self.mode.get() == "YOLO 자동 검출"
@@ -1853,20 +1896,27 @@ class CameraGUI:
                 if path.suffix.lower() != ".pt" or not path.is_file():
                     raise ValueError("기존 로컬 드론 학습 .pt 파일을 선택하세요.")
                 model = str(path.resolve())
+                self.update_coreml_default()
             self.frame = None
             self.result = None
             self.selection_time = time.monotonic()
             self.canvas.delete("all")
             self.draw_empty_preview()
-            device = "coreml" if model and self.use_coreml.get() else self.device.get()
-            if video_path is None:
-                self.session = CameraSession(camera, model, threshold, device, resolution)
-            else:
-                if not video_path.is_file():
-                    raise ValueError("기존 로컬 동영상 파일을 선택하세요.")
-                self.session = CameraSession(
-                    None, model, threshold, device, resolution, video_path=video_path
-                )
+            if video_path is not None and not video_path.is_file():
+                raise ValueError("기존 로컬 동영상 파일을 선택하세요.")
+            device = self.device.get()
+            use_coreml = model is not None and self.use_coreml.get()
+            self.session = CameraSession(
+                camera if video_path is None else None,
+                model,
+                threshold,
+                "coreml" if use_coreml else device,
+                resolution,
+                video_path=video_path,
+                coreml_fallback_device=device
+                if use_coreml and not self.coreml_overridden
+                else None,
+            )
             self.metrics = self.session.metrics
             self.metrics.settings["preview_target_fps"] = int(self.preview_fps.get())
             self.save_metrics_button.configure(state="disabled")
@@ -2136,6 +2186,8 @@ class CameraGUI:
         self.finish_video_import()
         session = self.session
         if session is not None:
+            if "coreml_fallback" in session.metrics.settings and self.use_coreml.get():
+                self.use_coreml.set(False)
             video_input = session.metrics.settings.get("source_type") == "video_test"
             try:
                 error = session.errors.get_nowait()
