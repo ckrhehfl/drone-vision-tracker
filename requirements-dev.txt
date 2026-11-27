@@ -8,6 +8,8 @@ attrs==26.1.0
 colorama==0.4.6; sys_platform == "win32"
 iniconfig==2.3.0
 jsonschema-specifications==2025.9.1
+numpy==2.2.6
+opencv-python==5.0.0.93
 packaging==26.3
 pluggy==1.6.0
 referencing==0.37.0
