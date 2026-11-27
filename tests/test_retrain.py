@@ -603,3 +603,68 @@ def test_gui_dataset_approval_preserves_existing_manifest_on_failure(
         gui.approve_dataset(output)
     assert path.read_bytes() == (before + b"\n" if failure == "conflict" else before)
     assert not list(output.glob(".manifest-*"))
+
+
+def test_long_camera_capture_reaches_review_and_training_without_truncating_photos(
+    tmp_path, monkeypatch
+):
+    from contextlib import nullcontext
+    from unittest.mock import patch
+
+    from tools import camera_gui
+    from tools.frame_collection import FrameCollector
+    from tools.label_editor import LabelDocument
+    from tools.retrain import load_source
+    from tools.tracking_metrics import validate_record
+    from tools.training_gui import label_source
+
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cv2")
+    pytest.importorskip("PIL")
+    with patch("threading.Thread.start"):
+        session = camera_gui.CameraSession(0, None, 0.65, "cpu")
+    root = tmp_path / "photos"
+    session.collector = FrameCollector(root, session.metrics)
+    frame = np.zeros((16, 32, 3), dtype=np.uint8)
+    read_count = 0
+
+    def read():
+        nonlocal read_count
+        read_count += 1
+        if read_count == 6002:
+            session.stop.set()
+        return True, frame
+
+    monkeypatch.setattr(
+        camera_gui, "camera_input", lambda *_: nullcontext(SimpleNamespace(read=read))
+    )
+
+    def capture_time():
+        return session.metrics.started + read_count * 0.00001 + (1 if read_count > 6000 else 0)
+
+    monkeypatch.setattr(camera_gui, "time", SimpleNamespace(monotonic=capture_time))
+    session.capture()
+    session.finish()
+    assert session.errors.empty() and session.collector.error is None
+    document = LabelDocument(root)
+    assert [row["frame_id"] for row in document.samples] == [1, 6001]
+    document.set_box(0, [2, 2, 10, 10])
+    document.set_box(1, None)
+    document.save(reviewed=True)
+    entry = label_source(root, "train", "single-camera")
+    _, prepared, _, _ = load_source(entry, tmp_path)
+    assert [row["sample"]["frame_id"] for row in prepared] == [1, 6001]
+    assert [row["case"] for row in prepared] == ["unprocessed", "unprocessed"]
+    measurement = root / "measurement.json"
+    record = json.loads(measurement.read_text(encoding="utf-8"))
+    assert len(record["frames"]) == 6000 and record["performance"]["counts"]["capture"] == 6002
+    with pytest.raises(ValueError, match="전체 기록"):
+        validate_record(record)
+    record["collection_frames"][0]["timestamp_s"] += 0.1
+    measurement.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="크기·시각"):
+        load_source(entry, tmp_path)
+    record["collection_frames"] = []
+    measurement.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="frame_id"):
+        load_source(entry, tmp_path)

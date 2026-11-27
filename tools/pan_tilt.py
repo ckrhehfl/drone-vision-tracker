@@ -71,10 +71,12 @@ class PanTiltController:
         max_frame_age_s=DEFAULT_MAX_FRAME_AGE_S,
         clock=None,
         on_delay_hold=None,
+        track_pan=True,
     ):
         if not 0 <= dead_zone < 1 or not math.isfinite(max_frame_age_s) or max_frame_age_s <= 0:
             raise ValueError("Invalid dead zone or observation age limit")
         self.pan, self.tilt = pan, tilt
+        self.track_pan = track_pan
         self.dead_zone, self.max_frame_age_s = dead_zone, max_frame_age_s
         self.transport = MockTransport(PanTiltCommand(pan.neutral_deg, tilt.neutral_deg))
         self._clock = clock
@@ -86,6 +88,7 @@ class PanTiltController:
         self._last_frame_at = None
         self._previous_observation_at = None
         self._shape = None
+        self._pan_error = self._tilt_error = 0.0
 
     @classmethod
     def simulated(cls, *, clock=None, on_delay_hold=None):
@@ -97,9 +100,25 @@ class PanTiltController:
             on_delay_hold=on_delay_hold,
         )
 
-    def hold(self):
+    def hold(self, *, publish=None):
         with self._lock:
-            return self._hold()
+            command = self._hold()
+            if publish is not None:
+                publish()
+            return command
+
+    def hold_at_output(self, pan_deg, tilt_deg):
+        with self._lock:
+            latest = self.transport.latest
+            if (latest.pan_deg, latest.tilt_deg) != (pan_deg, tilt_deg):
+                self._hold()
+                self.transport.send(PanTiltCommand(pan_deg, tilt_deg))
+
+    def align_tilt_output(self, tilt_deg):
+        """Use an acknowledged tilt command as the starting point for the next observation."""
+        with self._lock:
+            last = self.transport.latest
+            self.transport.send(PanTiltCommand(last.pan_deg, tilt_deg, last.state, last.saturated))
 
     def stop(self):
         """Latch HOLD for the rest of this session, including in-flight results."""
@@ -117,6 +136,7 @@ class PanTiltController:
 
     def _hold(self, *, delayed=False):
         self._previous_observation_at = None
+        self._pan_error = self._tilt_error = 0.0
         last = self.transport.latest
         if last.state == "HOLD":
             return last
@@ -137,11 +157,36 @@ class PanTiltController:
         if now is not None and previous is not None and not self._fresh(previous, now):
             self._hold(delayed=math.isfinite(now) and now > previous + self.max_frame_age_s)
 
-    def snapshot(self, now=None):
+    def snapshot(self, now=None, *, blocking=True):
         """Service the live deadline even when the inference worker is busy."""
-        with self._lock:
+        if not self._lock.acquire(blocking=blocking):
+            return None
+        try:
             self._expire(self._clock() if self._clock is not None else now)
             return self.transport.latest
+        finally:
+            self._lock.release()
+
+    def tilt_snapshot(self):
+        """Return the target and the latest vertical error in the motor's direction."""
+        with self._lock:
+            self._expire(self._clock() if self._clock is not None else None)
+            return self.transport.latest, self.tilt.direction * self._tilt_error
+
+    def dispatch_tracking(self, accepts, write):
+        """Order the serial write with observation updates. The ACK is read outside this lock."""
+        with self._lock:
+            self._expire(self._clock() if self._clock is not None else None)
+            command = self.transport.latest
+            return (
+                command.state == "TRACK"
+                and accepts(
+                    command,
+                    self.pan.direction * self._pan_error,
+                    self.tilt.direction * self._tilt_error,
+                )
+                and write()
+            )
 
     def update(self, captured, shape, box, *, now=None, received_at=None):
         """Use the observation timeline for motion and host dispatch time for resume."""
@@ -184,8 +229,10 @@ class PanTiltController:
         dt = captured - previous
         ex, ey = (x1 + x2) / width - 1, (y1 + y2) / height - 1
         last = self.transport.latest
-        pan, pan_limited = self.pan.step(last.pan_deg, ex if abs(ex) > self.dead_zone else 0, dt)
-        tilt, tilt_limited = self.tilt.step(
-            last.tilt_deg, ey if abs(ey) > self.dead_zone else 0, dt
-        )
+        pan, pan_limited = last.pan_deg, False
+        self._pan_error = ex if abs(ex) > self.dead_zone else 0.0
+        if self.track_pan:
+            pan, pan_limited = self.pan.step(last.pan_deg, self._pan_error, dt)
+        self._tilt_error = ey if abs(ey) > self.dead_zone else 0.0
+        tilt, tilt_limited = self.tilt.step(last.tilt_deg, self._tilt_error, dt)
         return self.transport.send(PanTiltCommand(pan, tilt, "TRACK", pan_limited or tilt_limited))

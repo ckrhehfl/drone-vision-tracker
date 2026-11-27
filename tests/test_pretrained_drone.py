@@ -21,6 +21,40 @@ def test_field_default_requires_the_pinned_weights(tmp_path, monkeypatch):
     assert pretrained.installed_field_model(weights) is None
 
 
+def test_field_fallback_and_camera_reference_scope(tmp_path, monkeypatch):
+    newer, older = tmp_path / "field.pt", tmp_path / "older.pt"
+    monkeypatch.setattr(pretrained, "FIELD_MODEL", newer)
+    monkeypatch.setattr(pretrained, "BACKLIGHT_MODEL", older)
+    monkeypatch.setattr(pretrained, "FIELD_MODEL_SHA256", hashlib.sha256(b"new").hexdigest())
+    monkeypatch.setattr(pretrained, "BACKLIGHT_SHA256", hashlib.sha256(b"old").hexdigest())
+    older.write_bytes(b"old")
+    newer.write_bytes(b"wrong")
+    assert pretrained.installed_field_model() == older
+    newer.write_bytes(b"new")
+    assert pretrained.installed_field_model() == newer
+    np = pytest.importorskip("numpy")
+    profile = tmp_path / "field.npz"
+    np.savez(profile, appearances=np.zeros((29, 24, 24), dtype=np.uint8))
+    monkeypatch.setattr(pretrained, "PROJECTOR_PROFILE", profile)
+    monkeypatch.setattr(
+        pretrained, "PROJECTOR_PROFILE_SHA256", hashlib.sha256(profile.read_bytes()).hexdigest()
+    )
+    camera = {"name": pretrained.FIELD_CAMERA}
+    assert len(pretrained.camera_backgrounds(camera, str(newer), True)) == 29
+    for source, model, flip in [
+        (None, newer, True),
+        ({"name": "another"}, newer, True),
+        (camera, older, True),
+        (camera, newer, False),
+    ]:
+        assert pretrained.camera_backgrounds(source, str(model), flip) == ()
+    newer.write_bytes(b"different checkpoint")
+    assert pretrained.camera_backgrounds(camera, str(newer), True) == ()
+    newer.write_bytes(b"new")
+    profile.write_bytes(b"wrong profile")
+    assert pretrained.camera_backgrounds(camera, str(newer), True) == ()
+
+
 class Values(list):
     def copy_(self, values):
         self[:] = values

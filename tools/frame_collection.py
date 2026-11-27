@@ -27,12 +27,14 @@ class FrameCollector:
             or self.closed
             or (self.last_sample is not None and captured - self.last_sample < SAMPLE_INTERVAL_S)
         ):
-            return
+            return False
         self.last_sample = captured
         try:
             self.jobs.put_nowait((frame_id, captured, frame.copy()))
         except queue.Full:
             self.dropped += 1
+            return False
+        return True
 
     def _write(self):
         while True:
