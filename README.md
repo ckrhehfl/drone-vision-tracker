@@ -11,7 +11,7 @@ Windows는 같은 프로그램을 사용하며 [Windows CUDA 설치·검증 안�
 [Seraphim 기반 공개 쿼드콥터 모델](models/seraphim-yolov8n.md)을 설치하면
 GUI에서 YOLO 자동 검출을 기본 선택합니다. [현장 추가 학습 모델](models/field-backlight-20261124.md)을
 설치한 환경에서는 해당 모델을 먼저 선택합니다.
-Apple Silicon의 macOS 15 이상에서는 기존 YOLO 가중치로 Core ML을 준비해 자동 검출에 사용할 수 있습니다. [Core ML 사용 안내](docs/camera-gui.md#core-ml-자동-검출)
+Apple Silicon의 macOS 15 이상에서는 선택 모델의 Core ML 변환본이 준비되어 있으면 자동 검출에 기본으로 사용합니다. [Core ML 사용 안내](docs/camera-gui.md#core-ml-자동-검출)
 수동 드래그 추적과 로컬 드론 YOLO 모델 검출을 지원합니다. [실행·한계 안내](docs/camera-gui.md)를 확인하세요.
 사이드바의 **추적 / 학습 · 평가**에서 작업을 전환하며, 입력·추적 방식을 고르고 **추적 시작**을 누릅니다.
 모델·장치·임계값·요청 해상도는 실행 전에 설정하고, 실행 상태와 실제 해상도·처리 시간·관측 여부를 확인합니다.

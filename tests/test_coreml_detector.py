@@ -31,6 +31,26 @@ def test_bundle_must_match_selected_checkpoint(monkeypatch, tmp_path):
         detector.read_bundle(weights, sha256(weights))
 
 
+def test_coreml_default_requires_platform_package_and_matching_bundle(monkeypatch, tmp_path):
+    weights, bundle = install_bundle(monkeypatch, tmp_path)
+    monkeypatch.setattr(detector, "find_spec", lambda name: object())
+    monkeypatch.setattr(detector, "supports_coreml", lambda: False)
+    assert not detector.coreml_ready(weights)
+
+    monkeypatch.setattr(detector, "supports_coreml", lambda: True)
+    assert not detector.coreml_ready(weights)  # A receipt and an empty directory are insufficient.
+    (bundle / "detector.mlmodelc" / "model.mil").touch()
+    assert detector.coreml_ready(weights)
+    assert not detector.coreml_ready(None)
+    assert not detector.coreml_ready(tmp_path / "missing.pt")
+    with monkeypatch.context() as without_package:
+        without_package.setattr(detector, "find_spec", lambda name: None)
+        assert not detector.coreml_ready(weights)
+
+    weights.write_bytes(b"after training")
+    assert not detector.coreml_ready(weights)
+
+
 def test_preparation_command_keeps_model_path_as_one_argument(monkeypatch, tmp_path):
     monkeypatch.setattr(detector, "CACHE_DIR", tmp_path / "cache")
     weights = tmp_path / """field model $(sample) '"drone".pt"""

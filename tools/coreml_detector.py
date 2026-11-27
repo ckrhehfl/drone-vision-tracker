@@ -5,6 +5,7 @@ import json
 import platform
 import shlex
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -73,6 +74,23 @@ def read_bundle(weights, digest):
             ) from exc
         raise ValueError(f"이 모델의 Core ML 변환본을 준비하세요. {command}") from exc
     return bundle, labels
+
+
+def coreml_ready(weights):
+    if not weights or not supports_coreml():
+        return False
+    try:
+        weights = Path(weights).expanduser()
+        if (
+            weights.suffix.lower() != ".pt"
+            or not weights.is_file()
+            or find_spec("coremltools") is None
+        ):
+            return False
+        bundle, _ = read_bundle(weights, sha256(weights))
+        return any((bundle / "detector.mlmodelc").iterdir())
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 class CoreMLDetector:
