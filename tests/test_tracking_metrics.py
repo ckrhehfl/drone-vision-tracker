@@ -64,7 +64,7 @@ def test_yolo_control_timing_formats_zero_and_exports_the_full_session(clock):
 def test_record_limit_is_explicit_and_does_not_stop_runtime_measurement(clock, monkeypatch):
     monkeypatch.setattr("tools.tracking_metrics.MAX_RECORDS", 2)
     metrics = SessionMetrics()
-    assert [metrics.capture(at, (100, 100)) for at in (0.1, 0.2, 0.3)] == [1, 2, None]
+    assert [metrics.capture(at, (100, 100)) for at in (0.1, 0.2, 0.3)] == [1, 2, 3]
     metrics.processed(0.1, 0.1, 0.2, (1, 2, 20, 30, 0.9), "ViT")
     metrics.processed(0.3, 0.3, 0.4, None, "재검색")
     clock[0] = 0.5
@@ -279,3 +279,15 @@ def test_cli_outputs_machine_readable_result_and_rejects_bad_json(trial, tmp_pat
     inputs[1].write_text('{"schema_version":1,"schema_version":1}')
     assert main(argv) == 1
     assert "Duplicate JSON key" in capsys.readouterr().out
+
+
+def test_save_first_complete_performance_window_for_long_run(clock):
+    metrics = SessionMetrics()
+    for at, latency in [(0.1, 0.01), (2.0, 0.01), (200.0, 0.15)]:
+        metrics.capture(at, (100, 100))
+        clock[0] = at + latency
+        metrics.processed(at, at, clock[0], None, "재검색")
+    report = metrics.report()
+    assert report["initial_performance"]["counts"]["process"] == 2
+    assert report["initial_performance"]["host_latency_ms"]["p95"] == pytest.approx(10)
+    assert report["performance"]["host_latency_ms"]["p95"] == pytest.approx(150)

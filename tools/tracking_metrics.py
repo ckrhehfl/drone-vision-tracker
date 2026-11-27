@@ -29,7 +29,9 @@ class SessionMetrics:
         self.counts = Counter()
         self.timings = deque()
         self.frames = {}
+        self.collection_frames = {}
         self.last_display = None
+        self.initial_performance = None
         self.ended, self.error = None, None
 
     def _event(self, name, at):
@@ -44,19 +46,27 @@ class SessionMetrics:
             self._event("capture", captured)
             # shortcut: retain 6000 frames in memory; stream metadata for longer evaluations.
             if len(self.frames) < MAX_RECORDS:
-                self.frames[captured] = {
-                    "frame_id": self.counts["capture"],
-                    "timestamp_s": captured - self.started,
-                    "width": shape[1],
-                    "height": shape[0],
-                    "processed": False,
-                    "box": None,
-                    "completed_s": None,
-                    "method": None,
-                }
+                self.frames[captured] = self._frame_row(self.counts["capture"], captured, shape)
                 if video_time_s is not None:
                     self.frames[captured]["video_time_s"] = video_time_s
-                return self.counts["capture"]
+            return self.counts["capture"]
+
+    def _frame_row(self, frame_id, captured, shape):
+        return {
+            "frame_id": frame_id,
+            "timestamp_s": captured - self.started,
+            "width": shape[1],
+            "height": shape[0],
+            "processed": False,
+            "box": None,
+            "completed_s": None,
+            "method": None,
+        }
+
+    def retain_collection_frame(self, frame_id, captured, shape):
+        if frame_id > MAX_RECORDS:
+            with self.lock:
+                self.collection_frames[captured] = self._frame_row(frame_id, captured, shape)
 
     def discard(self, reason, count=1):
         with self.lock:
@@ -74,7 +84,7 @@ class SessionMetrics:
     def delay_hold(self):
         self.discard("delay_hold_transitions")
 
-    def processed(self, captured, started, finished, detection, method):
+    def processed(self, captured, started, finished, detection, method, *, yolo=None):
         with self.lock:
             self._event("process", finished)
             self.timings.append(
@@ -82,13 +92,20 @@ class SessionMetrics:
             )
             while self.timings and self.timings[0][0] <= finished - WINDOW_S:
                 self.timings.popleft()
-            if captured in self.frames:
-                self.frames[captured].update(
+            if yolo is not None:
+                self.counts[f"yolo_{yolo['stage']}_frames"] += 1
+            row = self.frames.get(captured) or self.collection_frames.get(captured)
+            if row is not None:
+                row.update(
                     processed=True,
                     box=list(detection[:4]) if detection is not None else None,
                     completed_s=finished - self.started,
                     method=method,
                 )
+                if yolo is not None:
+                    row["yolo"] = yolo
+            if self.initial_performance is None and finished - self.started >= WINDOW_S:
+                self.initial_performance = self._snapshot(finished)
 
     def displayed(self, captured, finished):
         with self.lock:
@@ -163,6 +180,8 @@ class SessionMetrics:
                 "error": self.error,
                 "settings": dict(self.settings),
                 "performance": self._snapshot(time.monotonic()),
+                "initial_performance": self.initial_performance,
+                "collection_frames": [dict(row) for row in self.collection_frames.values()],
                 "frames": [
                     dict(row, box=list(row["box"]) if row["box"] else None)
                     for row in self.frames.values()
@@ -223,7 +242,7 @@ def validate_box(value, width, height):
     return value
 
 
-def validate_record(record):
+def validate_record(record, *, for_photo_collection=False):
     from tools.camera_gui import MAX_AGE_S
     from tools.training_data import is_sha256
 
@@ -237,11 +256,20 @@ def validate_record(record):
         raise ValueError("측정 기록의 session_id가 필요합니다.")
     performance = record.get("performance", {})
     rows = record.get("frames")
+    settings = record.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ValueError("측정 설정은 JSON 객체여야 합니다.")
+    sparse_collection = (
+        for_photo_collection
+        and settings.get("source_type") == "camera"
+        and isinstance(performance, dict)
+        and performance.get("truncated") is True
+    )
     if (
         record.get("status") != "completed"
         or record.get("error") is not None
         or not isinstance(performance, dict)
-        or performance.get("truncated") is not False
+        or (performance.get("truncated") is not False and not sparse_collection)
     ):
         raise ValueError(
             "정상 종료된 전체 기록만 평가합니다. "
@@ -249,15 +277,18 @@ def validate_record(record):
         )
     if not isinstance(rows, list) or not rows:
         raise ValueError("평가 프레임과 정답 목록이 필요합니다.")
-    if (
-        not isinstance(performance.get("counts"), dict)
-        or type(performance["counts"].get("capture")) is not int
-        or performance["counts"]["capture"] != len(rows)
+    counts = performance.get("counts")
+    capture_count = counts.get("capture") if isinstance(counts, dict) else None
+    prefix_length = len(rows)
+    if type(capture_count) is not int or (
+        capture_count <= prefix_length if sparse_collection else capture_count != prefix_length
     ):
         raise ValueError("전체 수신 프레임이 기록에 포함되어야 합니다.")
-    settings = record.get("settings", {})
-    if not isinstance(settings, dict):
-        raise ValueError("측정 설정은 JSON 객체여야 합니다.")
+    if sparse_collection:
+        extra = record.get("collection_frames", [])
+        if not isinstance(extra, list):
+            raise ValueError("수집 프레임 측정 기록이 올바르지 않습니다.")
+        rows = rows + extra
     video_input = settings.get("source_type") == "video_test"
     if video_input and (
         settings.get("video_complete") is not True
@@ -271,13 +302,16 @@ def validate_record(record):
             "영상 테스트는 원본 식별과 전체 프레임 처리가 완료되어야 평가할 수 있습니다."
         )
     previous_time, previous_video_time = -1.0, -1.0
+    previous_id = 0
     for index, row in enumerate(rows, 1):
         if (
             not isinstance(row, dict)
             or type(row.get("frame_id")) is not int
-            or row["frame_id"] != index
+            or not previous_id < row["frame_id"] <= capture_count
+            or (index <= prefix_length and row["frame_id"] != index)
         ):
             raise ValueError("기록 frame_id가 순서대로 이어지지 않습니다.")
+        previous_id = row["frame_id"]
         timestamp, width, height = row.get("timestamp_s"), row.get("width"), row.get("height")
         if (
             not _number(timestamp)

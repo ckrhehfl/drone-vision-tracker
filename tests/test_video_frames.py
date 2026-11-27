@@ -53,6 +53,7 @@ def test_video_sampling_preserves_source_pts_pixels_and_needs_review(video_input
     source, output, state, _ = video_input
     original = source.read_bytes()
     result = video_frames.extract_video(source, output)
+    assert result["recorded_flip_vertical"] is None
     assert result["status"] == "completed" and state.released
     assert result["frames_decoded"] == 5
     assert result["original_video_sha256"] == sha256(source)

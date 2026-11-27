@@ -16,18 +16,51 @@ SOURCE_URL = f"https://huggingface.co/{REPOSITORY}/resolve/{REVISION}/best.pt"
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "models/local/seraphim-yolov8n"
 SOURCE = ROOT / "artifacts/seraphim-model/source.pt"
-FIELD_MODEL = ROOT / "models/local/field-backlight-20261124/field-backlight-20261124.pt"
-FIELD_MODEL_SHA256 = "642b84816bc0394156ae0c5b638d30584146f698ff76e6662f7f480b132317dc"
+FIELD_MODEL = ROOT / "models/local/projector-lower-20261126/projector-lower-20261126.pt"
+FIELD_MODEL_SHA256 = "f3b2202d3df51c8ccc1dfafa56c71e5bcc68ed19392091eeedec81faeb7ede3c"
+BACKLIGHT_MODEL = ROOT / "models/local/field-backlight-20261124/field-backlight-20261124.pt"
+BACKLIGHT_SHA256 = "642b84816bc0394156ae0c5b638d30584146f698ff76e6662f7f480b132317dc"
+PROJECTOR_PROFILE = FIELD_MODEL.with_name("projector-appearances-upper-left.npz")
+PROJECTOR_PROFILE_SHA256 = "d4293906c1a47090014ae29d980934c3f62ee6c99b74230d94f4f8f7af66f786"
+FIELD_CAMERA = "Innomaker-U30CAM-4K-S1"
 
 
-def installed_field_model(path=FIELD_MODEL):
-    """Use only the reviewed local field checkpoint as a default."""
-    try:
-        if path.is_file() and sha256(path) == FIELD_MODEL_SHA256:
-            return path.resolve()
-    except OSError:
-        pass
+def installed_field_model(path=None):
+    """Prefer the pinned camera trial weights, falling back to the previous field install."""
+    candidates = [(FIELD_MODEL, FIELD_MODEL_SHA256), (BACKLIGHT_MODEL, BACKLIGHT_SHA256)]
+    if path is not None:
+        candidates = [(path, BACKLIGHT_SHA256 if path == BACKLIGHT_MODEL else FIELD_MODEL_SHA256)]
+    for weights, expected in candidates:
+        try:
+            if weights.is_file() and sha256(weights) == expected:
+                return weights.resolve()
+        except OSError:
+            continue
     return None
+
+
+def camera_backgrounds(camera, model, flip_vertical):
+    if (
+        not camera
+        or camera.get("name") != FIELD_CAMERA
+        or not flip_vertical
+        or not model
+        or Path(model) != FIELD_MODEL
+        or installed_field_model(FIELD_MODEL) is None
+    ):
+        return ()
+    try:
+        if not PROJECTOR_PROFILE.is_file() or sha256(PROJECTOR_PROFILE) != PROJECTOR_PROFILE_SHA256:
+            return ()
+        import numpy as np
+
+        with np.load(PROJECTOR_PROFILE, allow_pickle=False) as data:
+            references = data["appearances"]
+        if references.shape == (29, 24, 24) and references.dtype == np.uint8:
+            return tuple(references)
+    except (OSError, KeyError, ValueError, ImportError):
+        pass
+    return ()
 
 
 def installed_model(root=MODEL_DIR):

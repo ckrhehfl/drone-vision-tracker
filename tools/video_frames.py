@@ -12,7 +12,9 @@ from tools.training_data import sha256
 MAX_SAMPLES = 6000
 
 
-def extract_video(video, output, interval=SAMPLE_INTERVAL_S, cancel=None):
+def extract_video(
+    video, output, interval=SAMPLE_INTERVAL_S, cancel=None, *, recorded_flip_vertical=None
+):
     video, output = Path(video).expanduser().resolve(), Path(output).expanduser().resolve()
     if not video.is_file():
         raise ValueError("기존 로컬 동영상 파일을 선택하세요.")
@@ -31,6 +33,7 @@ def extract_video(video, output, interval=SAMPLE_INTERVAL_S, cancel=None):
         "status": "failed",
         "original_video": str(video),
         "original_video_sha256": digest,
+        "recorded_flip_vertical": recorded_flip_vertical,
         "timestamp_source": "opencv_pos_msec",
         "sample_interval_s": interval,
         "frames_decoded": 0,

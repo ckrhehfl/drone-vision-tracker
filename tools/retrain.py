@@ -61,7 +61,7 @@ def load_source(entry, parent):
         rows = None
     else:
         record = read_json(paths["record"])
-        rows = validate_record(record)
+        rows = {row["frame_id"]: row for row in validate_record(record, for_photo_collection=True)}
         session_id = record["session_id"]
     for value in (collection, annotations):
         if (
@@ -99,13 +99,14 @@ def load_source(entry, parent):
         if (
             not isinstance(sample, dict)
             or type(sample.get("frame_id")) is not int
-            or not 1 <= sample["frame_id"] <= (collection["frames_decoded"] if video else len(rows))
+            or (video and not 1 <= sample["frame_id"] <= collection["frames_decoded"])
+            or (not video and sample["frame_id"] not in rows)
             or sample["frame_id"] in seen
         ):
             raise ValueError("수집 frame_id가 기록에 없거나 중복됐습니다.")
         frame_id = sample["frame_id"]
         seen.add(frame_id)
-        row = sample if video else rows[frame_id - 1]
+        row = sample if video else rows[frame_id]
         if (
             type(sample.get("width")) is not int
             or type(sample.get("height")) is not int

@@ -37,6 +37,13 @@ def test_dead_zone_holds_current_target_and_speed_uses_elapsed_time():
     assert (centered.pan_deg, centered.tilt_deg) == pytest.approx((92.1, 92.1))
 
 
+def test_preview_snapshot_does_not_wait_for_controller_lock():
+    controller = PanTiltController.simulated()
+    with controller._lock:
+        assert controller.snapshot(blocking=False) is None
+    assert controller.snapshot(blocking=False).state == "HOLD"
+
+
 @pytest.mark.parametrize("direction, boundary", [(1, 91), (-1, 89)])
 def test_range_saturates_without_accumulation_and_allows_immediate_inward_step(direction, boundary):
     controller = PanTiltController(

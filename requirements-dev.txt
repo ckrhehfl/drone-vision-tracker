@@ -1,6 +1,7 @@
 # Validated with CPython 3.11.0; lock all resolved development dependencies.
 ruff==0.11.13
 pytest==8.3.5
+pyserial==3.5
 jsonschema==4.23.0
 PyYAML==6.0.2
 attrs==26.1.0

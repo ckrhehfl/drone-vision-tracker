@@ -1,4 +1,4 @@
-"""Local camera tracking; saves stills only on opt-in and never opens Serial."""
+"""Local camera tracking with opt-in still collection and explicit motor commissioning."""
 
 import hashlib
 import json
@@ -8,12 +8,18 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from tools.coreml_detector import supports_coreml
 from tools.frame_collection import FrameCollector
 from tools.pan_tilt import DEFAULT_MAX_FRAME_AGE_S, PanTiltController
-from tools.pretrained_drone import installed_field_model, installed_model
+from tools.pretrained_drone import (
+    FIELD_CAMERA,
+    camera_backgrounds,
+    installed_field_model,
+    installed_model,
+)
 from tools.tracking_metrics import (
     SessionMetrics,
     evaluate,
@@ -90,6 +96,32 @@ JSON.stringify(output);
         ) from exc
 
 
+@contextmanager
+def camera_input(device, resolution, fps=60):
+    import cv2
+
+    backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+    index = device
+    if isinstance(device, dict):
+        index = next((d["index"] for d in list_cameras() if d["id"] == device["id"]), None)
+        if index is None:
+            raise RuntimeError("선택한 카메라가 연결되어 있지 않습니다. 목록을 새로고침하세요.")
+    capture = cv2.VideoCapture(index, backend)
+    try:
+        if not capture.isOpened():
+            raise RuntimeError("선택한 카메라를 열 수 없습니다. 연결과 카메라 권한을 확인하세요.")
+        if isinstance(device, dict):
+            devices = list_cameras()
+            if index >= len(devices) or devices[index]["id"] != device["id"]:
+                raise RuntimeError("카메라 목록이 바뀌었습니다. 목록 새로고침 후 다시 시작하세요.")
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+        capture.set(cv2.CAP_PROP_FPS, fps)
+        yield capture
+    finally:
+        capture.release()
+
+
 def put_latest(channel, item):
     """Single producer, single consumer: discard queued work before publishing."""
     discarded = False
@@ -102,17 +134,26 @@ def put_latest(channel, item):
     return discarded
 
 
+def set_if_changed(variable, value):
+    if variable.get() != value:
+        variable.set(value)
+
+
 def selection_box(start, end, width, height):
     x1, x2 = sorted(max(0, min(width, int(x))) for x in (start[0], end[0]))
     y1, y2 = sorted(max(0, min(height, int(y))) for y in (start[1], end[1]))
     return (x1, y1, x2, y2) if x2 - x1 >= 12 and y2 - y1 >= 12 else None
 
 
+def box_area(box):
+    return (box[2] - box[0]) * (box[3] - box[1])
+
+
 def overlap(a, b):
     intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(
         0, min(a[3], b[3]) - max(a[1], b[1])
     )
-    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - intersection
+    union = box_area(a) + box_area(b) - intersection
     return intersection / union if union > 0 else 0.0
 
 
@@ -126,19 +167,155 @@ def choose_target(detections, previous):
     )
 
 
+def box_inside_frame(box, shape):
+    left, top, right, bottom = box[:4]
+    height, width = shape[:2]
+    # Resized YOLO boxes can place a clipped edge within the border pixel.
+    return 1 <= left < right <= width - 1 and 1 <= top < bottom <= height - 1
+
+
+def box_touches_crop_edge(box, region, shape):
+    left, top, right, bottom = box[:4]
+    x1, y1, x2, y2 = region
+    height, width = shape[:2]
+    return (
+        (x1 > 0 and left < x1 + 1)
+        or (y1 > 0 and top < y1 + 1)
+        or (x2 < width and right > x2 - 1)
+        or (y2 < height and bottom > y2 - 1)
+    )
+
+
+def yolo_appearance(frame, box):
+    import cv2
+
+    left, top, right, bottom = map(round, box[:4])
+    width, height = right - left, bottom - top
+    if min(width, height) < 12:
+        return None
+    dx, dy = width // 6, height // 6
+    inner = frame[top + dy : bottom - dy, left + dx : right - dx]
+    patch = cv2.cvtColor(
+        cv2.resize(inner, (24, 24), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY
+    )
+    return patch if patch.std() >= 10 else None
+
+
+def same_yolo_appearance(frame, box, reference, *, minimum_score=0.89):
+    import cv2
+
+    patch = yolo_appearance(frame, box)
+    center = reference[3:-3, 3:-3]
+    return (
+        patch is not None
+        and center.std() >= 10
+        and cv2.matchTemplate(patch, center, cv2.TM_CCOEFF_NORMED).max() >= minimum_score
+    )
+
+
+def yolo_background_matcher(appearances):
+    if not appearances:
+        return None
+    import cv2
+
+    centers = [reference[3:-3, 3:-3] for reference in appearances]
+    centers = [center for center in centers if center.std() >= 10]
+    # Inference crops can put slightly different edges on the same fixture.
+    templates = centers + [
+        cv2.resize(center, (size, size)) for size in (17, 19) for center in centers
+    ]
+    templates = [template for template in templates if template.std() >= 10]
+
+    def matches(frame, box):
+        patch = yolo_appearance(frame, box)
+        return patch is not None and any(
+            cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED).max() >= 0.94
+            for template in templates
+        )
+
+    return matches if templates else None
+
+
 class YoloReacquisition:
-    """Confirm a lost target on three consistent fresh frames before publishing it."""
+    """Confirm a new or lost target on three consistent fresh frames."""
 
     def __init__(self):
-        self.required = False
+        self.required = True
         self.candidate = None
         self.confirmed_box = None
+        self.complete_box = None
+        self.appearance = None
+        self.appearance_required = False
         self.first_seen, self.last_seen, self.count = 0.0, 0.0, 0
 
     def lose(self):
         self.required = True
         self.candidate = None
         self.count = 0
+        self.appearance_required = False
+
+    def remember(self, detection, shape, appearance):
+        self.confirmed_box = detection[:4]
+        if box_inside_frame(detection, shape):
+            self.complete_box = self.confirmed_box
+            self.appearance = appearance
+
+    def select(self, detections, previous, candidate, frame, *, whole_scene, verify_previous=False):
+        if self.required and self.confirmed_box is not None:
+            reference_area = max(
+                box_area(box) for box in (self.confirmed_box, self.complete_box) if box is not None
+            )
+            detections = [box for box in detections if box_area(box) <= 4 * reference_area]
+        if previous is not None and (verify_previous or (whole_scene and self.appearance_required)):
+            matching = (
+                box
+                for box in detections
+                if overlap(box, previous) >= 0.3 and self.matches_appearance(frame, box)
+            )
+            original = choose_target(matching, previous)
+            if verify_previous:
+                if self.required and original is not None:
+                    self.appearance_required = True
+                return original
+            if original is not None:
+                if candidate is not None and overlap(candidate, previous) < 0.3:
+                    self.lose()
+                    self.appearance_required = True
+                return original
+        detected = choose_target(detections, candidate or previous)
+        if not self.required or (previous is None and not self.appearance_required):
+            return detected
+        if (
+            detected is None
+            and candidate is None
+            and previous is not None
+            and self.complete_box is not None
+            and not box_inside_frame(previous, frame.shape)
+        ):
+            detected = choose_target(detections, self.complete_box)
+        if detected is not None and not self.appearance_required:
+            return detected
+        if (
+            len(detections) != 1
+            or (candidate is None and not whole_scene)
+            or (candidate is not None and detected is None)
+        ):
+            return None
+        probe = detections[0]
+        if self.matches_appearance(frame, probe):
+            self.appearance_required = True
+            return probe
+        return None
+
+    def matches_appearance(self, frame, box):
+        return (
+            self.appearance is not None
+            and box_inside_frame(box, frame.shape)
+            and 0.5 * box_area(self.complete_box)
+            <= box_area(box)
+            <= 2 * box_area(self.complete_box)
+            and same_yolo_appearance(frame, box, self.appearance)
+        )
 
     def candidate_for(self, observed):
         if self.candidate is not None and not (
@@ -154,13 +331,6 @@ class YoloReacquisition:
             return None, "재검색"
         if not self.required:
             return detection, "YOLO"
-        if self.confirmed_box is not None:
-            x1, y1, x2, y2 = self.confirmed_box
-            area = (detection[2] - detection[0]) * (detection[3] - detection[1])
-            # shortcut: large scale jumps need a new session or better identity evidence.
-            if area > 4 * (x2 - x1) * (y2 - y1):
-                self.lose()
-                return None, "재검색"
         previous = self.candidate_for(observed)
         if previous is not None and overlap(previous, detection[:4]) >= 0.3:
             self.count += 1
@@ -169,8 +339,8 @@ class YoloReacquisition:
         self.candidate, self.last_seen = detection[:4], observed
         if self.count < 3:
             return None, f"재획득 확인 중 ({self.count}/3)"
-        self.required, self.candidate = False, None
-        return detection, "재획득"
+        self.required, self.candidate, self.appearance_required = False, None, False
+        return detection, "YOLO" if self.confirmed_box is None else "재획득"
 
 
 def template_sizes(template_shape, frame_shape):
@@ -465,6 +635,13 @@ def search_tiles(shape, side=640):
     return [(x, y, x + tile_width, y + tile_height) for y in ys for x in xs]
 
 
+def source_box(box, height, flip_vertical):
+    if box is None or not flip_vertical:
+        return box
+    left, top, right, bottom, *extra = box
+    return (left, height - bottom, right, height - top, *extra)
+
+
 def restore_detection(detection, region, processed_shape):
     """Map crop/resized-image boxes back to the original camera pixels."""
     if detection is None:
@@ -513,9 +690,20 @@ def observation_for_preview(result, captured, shape, now):
 
 class CameraSession:
     pan_tilt: PanTiltController | None = None
+    manual_target_lost = True
 
     def __init__(
-        self, camera, model_path, threshold, device, resolution=(1920, 1080), *, video_path=None
+        self,
+        camera,
+        model_path,
+        threshold,
+        device,
+        resolution=(1920, 1080),
+        *,
+        capture_fps=60,
+        video_path=None,
+        flip_vertical=False,
+        background_appearances=(),
     ):
         if video_path is not None and not model_path:
             raise ValueError("영상 테스트에는 drone 클래스가 있는 로컬 YOLO 모델이 필요합니다.")
@@ -527,6 +715,7 @@ class CameraSession:
         self.video_timestamp = 0.0
         self.video_progress = (0.0, 0)
         self.threshold, self.device = threshold, device
+        self.background_appearances = tuple(background_appearances)
         self.resolution = resolution
         live_yolo = model_path is not None and video_path is None
         self.metrics = SessionMetrics(
@@ -536,10 +725,14 @@ class CameraSession:
                 "threshold": threshold,
                 "requested_resolution": list(resolution),
                 "source_type": "video_test" if video_path is not None else "camera",
+                "flip_vertical": flip_vertical,
             },
             yolo_deadline_s=DEFAULT_MAX_FRAME_AGE_S if model_path is not None else None,
         )
+        if video_path is None:
+            self.metrics.settings["requested_fps"] = capture_fps
         self.manual_engine = "대기"
+        self.manual_displayed_at = None
         self.pan_tilt = (
             PanTiltController.simulated(
                 clock=time.monotonic if live_yolo else None,
@@ -550,6 +743,7 @@ class CameraSession:
         )
         self.collector = None
         self.collection_lock = threading.Lock()
+        self.serial_write_lock = threading.Lock()
         self.stop = threading.Event()
         self.frames = queue.Queue(maxsize=1)
         self.previews = queue.Queue(maxsize=1)
@@ -564,9 +758,10 @@ class CameraSession:
             thread.start()
 
     def request_stop(self):
+        with self.serial_write_lock:
+            self.stop.set()
         if self.pan_tilt is not None:
             self.pan_tilt.stop()
-        self.stop.set()
 
     def capture(self):
         if self.metrics.settings.get("source_type") == "video_test":
@@ -574,53 +769,30 @@ class CameraSession:
             return
         import cv2
 
-        capture = None
+        flip_vertical = self.metrics.settings.get("flip_vertical", False)
         try:
-            backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
-            camera = self.camera
-            if isinstance(camera, dict):
-                camera = next(
-                    (d["index"] for d in list_cameras() if d["id"] == self.camera["id"]), None
-                )
-                if camera is None:
-                    raise RuntimeError(
-                        "선택한 카메라가 연결되어 있지 않습니다. 목록을 새로고침하세요."
-                    )
-            capture = cv2.VideoCapture(camera, backend)
-            if not capture.isOpened():
-                raise RuntimeError(
-                    "선택한 카메라를 열 수 없습니다. 연결과 macOS 카메라 권한을 확인하세요."
-                )
-            if isinstance(self.camera, dict):
-                devices = list_cameras()
-                if camera >= len(devices) or devices[camera]["id"] != self.camera["id"]:
-                    raise RuntimeError(
-                        "카메라 목록이 바뀌었습니다. 목록 새로고침 후 다시 시작하세요."
-                    )
-            capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            self.metrics.settings["requested_fps"] = 60
-            capture.set(cv2.CAP_PROP_FPS, 60)
-            while not self.stop.is_set():
-                ok, frame = capture.read()
-                if not ok:
-                    raise RuntimeError(
-                        "카메라 영상이 끊겼습니다. 연결 확인 후 목록 새로고침으로 다시 시작하세요."
-                    )
-                item = (time.monotonic(), frame)
-                frame_id = self.metrics.capture(item[0], frame.shape)
-                collector = self.collector
-                if collector is not None and frame_id is not None:
-                    collector.submit(frame_id, item[0], frame)
-                self.metrics.discard("preview_replaced", int(put_latest(self.previews, item)))
-                self.metrics.discard("tracking_replaced", int(put_latest(self.frames, item)))
+            with camera_input(
+                self.camera, self.resolution, self.metrics.settings["requested_fps"]
+            ) as capture:
+                while not self.stop.is_set():
+                    ok, frame = capture.read()
+                    if not ok:
+                        raise RuntimeError(
+                            "카메라 영상이 끊겼습니다. 연결을 확인하고 목록을 새로고침하세요."
+                        )
+                    captured = time.monotonic()
+                    frame_id = self.metrics.capture(captured, frame.shape)
+                    collector = self.collector
+                    if collector is not None and collector.submit(frame_id, captured, frame):
+                        self.metrics.retain_collection_frame(frame_id, captured, frame.shape)
+                    item = (captured, cv2.flip(frame, 0) if flip_vertical else frame)
+                    self.metrics.discard("preview_replaced", int(put_latest(self.previews, item)))
+                    self.metrics.discard("tracking_replaced", int(put_latest(self.frames, item)))
         except Exception as exc:
             self.metrics.fail(exc)
             self.errors.put(str(exc))
             self.request_stop()
         finally:
-            if capture is not None:
-                capture.release()
             with self.collection_lock:
                 if self.collector is not None:
                     self.collector.close()
@@ -632,6 +804,7 @@ class CameraSession:
 
         capture = None
         settings = self.metrics.settings
+        flip_vertical = settings.get("flip_vertical", False)
         settings["video_complete"] = False
         try:
             if not self.video_path.is_file():
@@ -689,7 +862,7 @@ class CameraSession:
                 decoded += 1
                 self.video_progress = (timestamp, decoded)
                 self.metrics.capture(dispatched, frame.shape, video_time_s=timestamp)
-                self.frames.put_nowait((dispatched, frame))
+                self.frames.put_nowait((dispatched, cv2.flip(frame, 0) if flip_vertical else frame))
                 # GUI acknowledges this exact frame only after its result has been displayed.
                 while self.video_displayed < dispatched and not self.stop.is_set():
                     self.display_ack.wait(0.02)
@@ -714,10 +887,21 @@ class CameraSession:
                 Path(parent) / f"learning-{self.metrics.session_id}", self.metrics
             )
 
+    def lose_manual_target(self):
+        if self.manual_target_lost:
+            return
+        controller = self.pan_tilt
+        if controller is None:
+            self.manual_target_lost = True
+        else:
+            controller.hold(publish=lambda: setattr(self, "manual_target_lost", True))
+
     def process(self):
         video_input = self.metrics.settings.get("source_type") == "video_test"
+        flip_vertical = self.metrics.settings.get("flip_vertical", False)
         try:
             model, drone_classes = None, []
+            matches_background = None
             if self.model_path:
                 if self.device == "coreml":
                     from tools.coreml_detector import CoreMLDetector
@@ -741,6 +925,7 @@ class CameraSession:
                     raise ValueError(
                         "모델에 drone 클래스가 없습니다. 드론 학습 best.pt를 선택하세요."
                     )
+                matches_background = yolo_background_matcher(self.background_appearances)
             template, recent_template, previous, geometry = None, None, None, None
             self.manual_engine = f"ViT {self.device.upper()} 준비 중" if model is None else "대기"
             tracker = create_manual_tracker(self.threshold, self.device) if model is None else None
@@ -772,6 +957,8 @@ class CameraSession:
                 )
                 if not video_input and started - captured > MAX_AGE_S:
                     yolo.lose()
+                    if model is None:
+                        self.lose_manual_target()
                     if self.pan_tilt is not None:
                         self.pan_tilt.snapshot()
                         self.pan_tilt.hold()
@@ -781,27 +968,32 @@ class CameraSession:
                 if geometry != shape:
                     if geometry is not None:
                         yolo.lose()
-                    yolo.confirmed_box = None
+                    yolo.confirmed_box = yolo.complete_box = yolo.appearance = None
                     template, previous, geometry, scan_index = None, None, shape, 0
                     recent_template = None
                     signature, pending = None, None
                     motion_frame = None
                     tracker_ready = False
+                    if model is None:
+                        self.lose_manual_target()
                 try:
                     selection = self.selections.get_nowait()
                     yolo.lose()
-                    yolo.confirmed_box = None
+                    yolo.confirmed_box = yolo.complete_box = yolo.appearance = None
                     template, previous, scan_index = None, None, 0
                     recent_template = None
                     signature, pending = None, None
                     motion_frame = None
                     tracker_ready = False
+                    if model is None:
+                        self.lose_manual_target()
                     if selection is not None and selection[2].shape[:2] == shape:
                         template, previous, motion_frame, motion_time = selection
                         recent_template = template
                         last_seen = tracking_time
                         x1, y1, x2, y2 = previous
                         signature = color_signature(motion_frame[y1:y2, x1:x2])
+                        self.manual_target_lost = False
                         if tracker is not None:
                             tracker.init(motion_frame, (x1, y1, x2 - x1, y2 - y1))
                             tracker_ready = True
@@ -814,33 +1006,58 @@ class CameraSession:
                     previous = None
                     motion_frame = None
                     tracker_ready = False
+                search_box = previous
+                if (
+                    model is not None
+                    and yolo.required
+                    and previous is not None
+                    and yolo.complete_box is not None
+                    and not box_inside_frame(previous, shape)
+                ):
+                    edge_reference = yolo.complete_box
+                    # Keep both possible positions in the same inference region.
+                    search_box = (
+                        min(previous[0], edge_reference[0]),
+                        min(previous[1], edge_reference[1]),
+                        max(previous[2], edge_reference[2]),
+                        max(previous[3], edge_reference[3]),
+                    )
                 whole = (0, 0, shape[1], shape[0])
                 region = whole
+                first_recovery_crop = False
                 search_template = template
                 recent = previous is not None and tracking_time - last_seen <= 1.0
+                searching = not recent or (model is not None and yolo.required)
                 small = (
-                    previous is not None
+                    search_box is not None
                     and max(
-                        (previous[2] - previous[0]) / shape[1],
-                        (previous[3] - previous[1]) / shape[0],
+                        (search_box[2] - search_box[0]) / shape[1],
+                        (search_box[3] - search_box[1]) / shape[0],
                     )
                     <= 0.08
                 )
-                if recent and (model is None or small):
-                    region = target_crop(previous, shape)
-                elif not recent and (model is not None or template is not None):
-                    tiles = search_tiles(shape)
-                    # One broad search per sweep also covers targets larger than a tile.
-                    slot = scan_index % (len(tiles) + 1)
-                    region = whole if slot == 0 else tiles[slot - 1]
-                    if model is None and (scan_index // (len(tiles) + 1)) % 2 == 0:
-                        search_template = recent_template
-                    scan_index += 1
                 yolo_candidate = yolo.candidate_for(tracking_time)
                 if model is not None and yolo_candidate is not None:
                     region = target_crop(yolo_candidate, shape)
+                elif not searching and (model is None or small):
+                    region = target_crop(search_box, shape)
+                elif searching and (model is not None or template is not None):
+                    tiles = search_tiles(shape)
+                    scan_slot, local_step = scan_index, 0
+                    if model is not None and small and recent:
+                        scan_slot, local_step = divmod(scan_index, 2)
+                    slot = scan_slot % (len(tiles) + 1)
+                    if local_step:
+                        region = target_crop(search_box, shape)
+                    elif slot:
+                        region = tiles[slot - 1]
+                    first_recovery_crop = model is not None and recent and scan_index == 1
+                    if model is None and (scan_index // (len(tiles) + 1)) % 2 == 0:
+                        search_template = recent_template
+                    scan_index += 1
                 detection = None
                 candidate = None
+                diagnostics = None
                 method = "YOLO" if model else "템플릿"
                 if model is None:
                     if template is not None:
@@ -899,6 +1116,9 @@ class CameraSession:
                             )
                             if detection is not None:
                                 method, region = "ViT", whole
+                        if detection is None:
+                            # Searching can find a lookalike. Only a fresh drag authorizes motion.
+                            self.lose_manual_target()
                         mask = color_mask(frame, signature) if detection is None else None
                         searchable = mask is not None and mask.any()
                         if detection is None and searchable:
@@ -996,34 +1216,72 @@ class CameraSession:
                             else:
                                 candidate, detection, method = detection, None, "재획득 확인 중"
                 else:
-                    x1, y1, x2, y2 = region
-                    crop = frame[y1:y2, x1:x2]
-                    result = model.predict(
-                        crop,
-                        conf=self.threshold,
-                        classes=drone_classes,
-                        device=inference_device,
-                        imgsz=640,
-                        verbose=False,
-                    )[0]
-                    boxes = result.boxes
-                    detections = []
-                    height, width = shape
-                    for coords, confidence in zip(
-                        boxes.xyxy.cpu().tolist(), boxes.conf.cpu().tolist(), strict=True
+                    regions = (region,)
+                    if region != whole and (
+                        yolo_candidate is not None
+                        or (previous is not None and yolo.appearance is not None)
                     ):
-                        box = restore_detection(
-                            (*coords, float(confidence)), region, crop.shape[:2]
+                        regions = (whole, region) if yolo.appearance_required else (region, whole)
+                    height, width = shape
+                    raw_count = eligible_count = 0
+                    for region in regions:
+                        x1, y1, x2, y2 = region
+                        crop = frame[y1:y2, x1:x2]
+                        boxes = model.predict(
+                            crop,
+                            conf=self.threshold,
+                            classes=drone_classes,
+                            device=inference_device,
+                            imgsz=640,
+                            verbose=False,
+                        )[0].boxes
+                        detections = []
+                        saw_valid_box = False
+                        coords_list = boxes.xyxy.cpu().tolist()
+                        raw_count = max(raw_count, len(coords_list))
+                        for coords, confidence in zip(
+                            coords_list, boxes.conf.cpu().tolist(), strict=True
+                        ):
+                            box = restore_detection(
+                                (*coords, float(confidence)), region, crop.shape[:2]
+                            )
+                            left, top, right, bottom, _ = box
+                            if (
+                                0 <= left < right <= width
+                                and 0 <= top < bottom <= height
+                                and not box_touches_crop_edge(box, region, shape)
+                            ):
+                                saw_valid_box = True
+                                if matches_background and matches_background(frame, box):
+                                    self.metrics.discard("background_rejected")
+                                    continue
+                                detections.append(box)
+                        eligible_count = max(eligible_count, len(detections))
+                        selected = yolo.select(
+                            detections,
+                            previous,
+                            yolo_candidate,
+                            frame,
+                            whole_scene=region == whole,
+                            verify_previous=region == whole
+                            and len(regions) == 2
+                            and yolo_candidate is None,
                         )
-                        left, top, right, bottom, _ = box
-                        if 0 <= left < right <= width and 0 <= top < bottom <= height:
-                            detections.append(box)
-                    # ponytail: IoU needs overlapping boxes; add an ID tracker for fast motion.
-                    detection, method = yolo.observe(
-                        choose_target(detections, yolo_candidate or previous), tracking_time
-                    )
+                        if selected is not None:
+                            break
+                        if (
+                            yolo.required
+                            and yolo_candidate is None
+                            and not saw_valid_box
+                            and not first_recovery_crop
+                        ):
+                            break
+                    detection, method = yolo.observe(selected, tracking_time)
                 appearance = None
-                if model is None and detection is not None:
+                if model is not None and detection is not None:
+                    if box_inside_frame(detection, shape):
+                        appearance = yolo_appearance(frame, detection)
+                elif detection is not None:
                     x1, y1, x2, y2 = (round(v) for v in detection[:4])
                     # Keep the last complete appearance, not a clipped exit or blank background.
                     if 0 < x1 < x2 < shape[1] and 0 < y1 < y2 < shape[0]:
@@ -1054,29 +1312,55 @@ class CameraSession:
                     previous = detection[:4]
                     last_seen = tracking_time if video_input or model is not None else finished
                     if model is not None:
-                        yolo.confirmed_box = detection[:4]
-                    if appearance is not None:
+                        yolo.remember(detection, shape, appearance)
+                        scan_index = 0
+                    elif appearance is not None:
                         recent_template = appearance
                 if model is None:
                     motion_frame = frame if detection is not None else None
                     motion_time = captured
                     if detection is None:
+                        self.lose_manual_target()
                         tracker_ready = False
                         if candidate is None:
                             pending = None
                             if template is not None:
                                 method = "재검색"
-                if self.pan_tilt is not None:
-                    if self.stop.is_set():
-                        self.pan_tilt.stop()
+                source_detection = source_box(detection, shape[0], flip_vertical)
+                if model is not None:
+                    if not video_input and finished - captured > MAX_AGE_S:
+                        stage = "stale"
+                    elif selected is not None:
+                        stage = "confirmed" if detection is not None else "confirming"
+                    elif eligible_count:
+                        stage = "unmatched"
                     else:
-                        self.pan_tilt.update(
-                            tracking_time,
+                        stage = "filtered" if raw_count else "no_candidate"
+                    diagnostics = {
+                        "stage": stage,
+                        "max_raw_candidates": raw_count,
+                        "max_eligible_candidates": eligible_count,
+                        "selected_box": source_box(selected[:4], shape[0], flip_vertical)
+                        if selected is not None
+                        else None,
+                    }
+                controller = self.pan_tilt
+                if controller is not None:
+                    if self.stop.is_set():
+                        controller.stop()
+                    else:
+                        motor_box = detection
+                        if model is None and self.manual_target_lost:
+                            motor_box = None
+                        controller.update(
+                            self.video_timestamp if video_input else captured,
                             shape,
-                            detection[:4] if detection is not None else None,
+                            motor_box[:4] if motor_box is not None else None,
                             received_at=captured,
                         )
-                self.metrics.processed(captured, started, finished, detection, method)
+                self.metrics.processed(
+                    captured, started, finished, source_detection, method, yolo=diagnostics
+                )
                 result_item = (captured, shape, detection, finished - started, region, method)
                 self.metrics.discard(
                     "result_replaced",
@@ -1119,18 +1403,30 @@ class CameraSession:
 
 
 class CameraGUI:
-    def __init__(self, root):
+    # The lower-resolution choices retain the existing tracking and recording rates.
+    camera_modes = {
+        "1080p · 60fps": ((1920, 1080), 60),
+        "4K · 30fps": ((3840, 2160), 30),
+        "1280×720": ((1280, 720), None),
+        "640×480": ((640, 480), None),
+    }
+
+    def __init__(self, root, *, background_appearances=()):
         import tkinter as tk
         from tkinter import ttk
 
         self.root, self.session, self.frame = root, None, None
+        self.background_appearances = tuple(background_appearances)
         self.closing = False
+        self.camera_results = queue.Queue(maxsize=1)
+        self.scanning_cameras = False
         self.video_thread = None
         self.video_cancel = threading.Event()
         self.video_results = queue.Queue(maxsize=1)
         self.drag_start, self.selection, self.photo = None, None, None
         self.render_key = None
         self.panel_scroll_until = self.next_scroll_preview = 0.0
+        self.panel_scroll_held = False
         self.result, self.selection_time = None, 0.0
         self.video_progress = (0.0, 0)
         self.metrics = None
@@ -1140,18 +1436,23 @@ class CameraGUI:
         self.display_offset = (0, 0)
         self.video_path = None
         self.cameras = {}
+        self.selected_camera_name = None
         self.settings_widgets = []
         self.mode_buttons = []
+        self.pan_window = None
         default_model = installed_field_model() or installed_model()
-        self.camera = tk.StringVar()
+        self.camera = tk.StringVar(value="카메라 목록 조회 중…")
         self.source = tk.StringVar(value="camera")
+        self.flip_vertical = tk.BooleanVar(value=False)
+        self.video_flip_vertical = tk.BooleanVar(value=False)
+        self.camera.trace_add("write", self.camera_changed)
         self.page = tk.StringVar(value="tracking")
         self.mode = tk.StringVar(value="YOLO 자동 검출" if default_model else "수동 지정")
         self.model = tk.StringVar(value=str(default_model) if default_model else "")
         self.threshold = tk.StringVar(value="0.25" if default_model else "0.65")
         self.device = tk.StringVar(value="mps" if sys.platform == "darwin" else "cpu")
         self.use_coreml = tk.BooleanVar(value=False)
-        self.resolution = tk.StringVar(value="1920×1080")
+        self.resolution = tk.StringVar(value="1080p · 60fps")
         self.preview_fps = tk.StringVar(value="60")
         self.video_name = tk.StringVar(value="테스트할 동영상을 선택하세요")
         self.capture_info = tk.StringVar(value="입력을 시작하면 실제 해상도를 확인할 수 있습니다.")
@@ -1167,7 +1468,6 @@ class CameraGUI:
         for variable in (
             self.threshold,
             self.device,
-            self.resolution,
             self.preview_fps,
             self.use_coreml,
             self.mode,
@@ -1217,16 +1517,6 @@ class CameraGUI:
             foreground=[("disabled", "#72839c")],
         )
         style.configure("TEntry", padding=9, fieldbackground="white", bordercolor="#d8e0eb")
-        style.configure(
-            "TCombobox",
-            padding=8,
-            fieldbackground="white",
-            background="#f5f7fb",
-            bordercolor="#d8e0eb",
-            arrowsize=14,
-        )
-        style.map("TCombobox", fieldbackground=[("readonly", "white")])
-
         sidebar = tk.Frame(root, background="#182c43", width=190)
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
@@ -1238,7 +1528,11 @@ class CameraGUI:
             font=("Arial", 20, "bold"),
             anchor="w",
         ).pack(fill="x", padx=20, pady=(35, 30))
-        for text, value in (("⊕   추적", "tracking"), ("▥   학습 · 평가", "learning")):
+        for text, value in (
+            ("⊕   추적", "tracking"),
+            ("▥   학습 · 평가", "learning"),
+            ("▸   동영상 촬영", "recording"),
+        ):
             tk.Radiobutton(
                 sidebar,
                 text=text,
@@ -1312,6 +1606,9 @@ class CameraGUI:
         )
         self.panel_view.pack(side="left", fill="both", expand=True, padx=(0, 8))
         scrollbar = ttk.Scrollbar(panel_container, command=self.scroll_panel)
+        scrollbar.bind("<ButtonPress-1>", lambda _: self.hold_panel_scroll(True))
+        scrollbar.bind("<ButtonRelease-1>", lambda _: self.hold_panel_scroll(False))
+        scrollbar.bind("<Unmap>", lambda _: self.hold_panel_scroll(False))
         scrollbar.pack(side="right", fill="y")
         self.panel_view.configure(yscrollcommand=scrollbar.set)
         panel_stack = ttk.Frame(self.panel_view)
@@ -1364,18 +1661,24 @@ class CameraGUI:
         self.camera_row = ttk.Frame(controls, style="Card.TFrame")
         self.camera_row.grid(row=2, sticky="ew")
         self.camera_row.columnconfigure(0, weight=1)
-        self.camera_select = ttk.Combobox(
+        # A native macOS dropdown can hold the application's input loop open.
+        self.camera_select = ttk.Spinbox(
             self.camera_row,
-            state="readonly",
+            state="disabled",
             textvariable=self.camera,
             width=18,
-            postcommand=self.refresh_cameras,
+            wrap=True,
         )
         self.camera_select.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.refresh_button = ttk.Button(
             self.camera_row, text="↻ 새로고침", command=self.refresh_cameras
         )
         self.refresh_button.grid(row=0, column=1)
+        ttk.Label(self.camera_row, text="카메라 입력 모드").grid(
+            row=1, column=0, sticky="w", pady=(8, 0)
+        )
+        self.camera_mode_select = self.camera_mode_selector(self.camera_row)
+        self.camera_mode_select.grid(row=1, column=1, sticky="ew", pady=(8, 0))
         self.video_row = ttk.Frame(controls, style="Card.TFrame")
         self.video_row.columnconfigure(0, weight=1)
         ttk.Label(
@@ -1385,11 +1688,16 @@ class CameraGUI:
             self.video_row, text="동영상 선택", command=self.choose_video
         )
         self.test_video_button.grid(row=1, sticky="ew")
+        self.flip_check = ttk.Checkbutton(
+            controls, text="영상 상하 반전", variable=self.flip_vertical
+        )
+        self.flip_check.grid(row=3, sticky="w", pady=(8, 0))
+        self.settings_widgets.append(self.flip_check)
         ttk.Label(controls, text="추적 방식", style="Section.TLabel").grid(
-            row=3, sticky="w", pady=(22, 10)
+            row=4, sticky="w", pady=(22, 10)
         )
         modes = tk.Frame(controls, background="#e4eaf2")
-        modes.grid(row=4, sticky="ew")
+        modes.grid(row=5, sticky="ew")
         for column, (text, value) in enumerate(
             (("자동 검출", "YOLO 자동 검출"), ("수동 지정", "수동 지정"))
         ):
@@ -1414,10 +1722,10 @@ class CameraGUI:
             self.settings_widgets.append(button)
             self.mode_buttons.append(button)
         ttk.Label(controls, text="드론 모델", style="Section.TLabel").grid(
-            row=5, sticky="w", pady=(22, 10)
+            row=6, sticky="w", pady=(22, 10)
         )
         model_row = ttk.Frame(controls, style="Card.TFrame")
-        model_row.grid(row=6, sticky="ew")
+        model_row.grid(row=7, sticky="ew")
         model_row.columnconfigure(0, weight=1)
         model_entry = ttk.Entry(model_row, textvariable=self.model, width=18)
         model_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
@@ -1427,9 +1735,9 @@ class CameraGUI:
         self.start_button = ttk.Button(
             controls, text="▶  추적 시작", style="Primary.TButton", command=self.start_selected
         )
-        self.start_button.grid(row=7, sticky="ew", pady=(22, 10))
+        self.start_button.grid(row=8, sticky="ew", pady=(22, 10))
         actions = ttk.Frame(controls, style="Card.TFrame")
-        actions.grid(row=8, sticky="ew")
+        actions.grid(row=9, sticky="ew")
         for column in range(2):
             actions.columnconfigure(column, weight=1)
         self.stop_button = ttk.Button(actions, text="■ 정지", command=self.stop, state="disabled")
@@ -1441,7 +1749,7 @@ class CameraGUI:
         self.pause_button = ttk.Button(
             controls, text="일시정지", command=self.pause_video, state="disabled"
         )
-        self.pause_button.grid(row=9, sticky="ew", pady=(8, 0))
+        self.pause_button.grid(row=10, sticky="ew", pady=(8, 0))
 
         advanced = tk.Frame(
             self.tracking_panel,
@@ -1466,7 +1774,6 @@ class CameraGUI:
             (
                 ("품질 임계값", self.threshold, None),
                 ("처리 장치", self.device, ("cuda", "mps", "cpu")),
-                ("요청 해상도", self.resolution, ("1920×1080", "1280×720", "640×480")),
                 ("화면 목표 FPS", self.preview_fps, ("30", "60")),
             )
         ):
@@ -1474,12 +1781,13 @@ class CameraGUI:
                 row=row, column=0, sticky="w", padx=(0, 10), pady=4
             )
             widget = (
-                ttk.Combobox(
+                ttk.Spinbox(
                     self.advanced_fields,
                     textvariable=variable,
                     values=values,
                     state="readonly",
                     width=14,
+                    wrap=True,
                 )
                 if values
                 else ttk.Entry(self.advanced_fields, textvariable=variable, width=14)
@@ -1490,7 +1798,7 @@ class CameraGUI:
             coreml = ttk.Checkbutton(
                 self.advanced_fields, text="자동 검출에 Core ML 사용", variable=self.use_coreml
             )
-            coreml.grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
+            coreml.grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
             self.settings_widgets.append(coreml)
         ttk.Label(
             self.tracking_panel,
@@ -1500,6 +1808,33 @@ class CameraGUI:
             background="#f7f9fc",
             wraplength=310,
         ).grid(row=2, sticky="nw", pady=12)
+
+        from tools.vision_motor_panel import MotorPanel
+
+        self.motor_panel = MotorPanel(
+            self.tracking_panel,
+            lambda: self.session,
+            lambda: self.closing or self.pan_window is not None,
+        )
+        self.motor_panel.frame.grid(row=3, sticky="ew", pady=(0, 12))
+        root.bind("<Escape>", lambda _: self.pan_window and self.pan_window.stop(), add="+")
+        root.bind(
+            "<FocusOut>",
+            lambda event: self.pan_window and self.pan_window.schedule_focus_check(event),
+            add="+",
+        )
+
+        manual_buttons = ttk.Frame(self.tracking_panel)
+        manual_buttons.grid(row=4, sticky="ew")
+        for column, (label, channels) in enumerate(
+            (("0번 모터 수동 조작", 1), ("0·1번 모터 수동 조작", 2))
+        ):
+            ttk.Button(
+                manual_buttons, text=label, command=lambda n=channels: self.open_pan_control(n)
+            ).grid(row=0, column=column, sticky="ew")
+            manual_buttons.columnconfigure(column, weight=1)
+        self.manual_container = ttk.Frame(self.tracking_panel)
+        self.manual_container.grid(row=5, sticky="ew")
 
         self.learning_panel = tk.Frame(
             panel_stack,
@@ -1567,6 +1902,7 @@ class CameraGUI:
 
         preview = tk.Frame(content, background="#f7f9fc")
         preview.grid(row=1, column=1, sticky="nsew")
+        self.dashboard_widgets = (panel_container, preview)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
         viewport = tk.Frame(
@@ -1632,14 +1968,12 @@ class CameraGUI:
             justify="left",
         )
         footer.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.footer = footer
         content.bind("<Configure>", lambda event: footer.configure(wraplength=event.width))
-        pending = [panel_container]
-        while pending:
-            widget = pending.pop()
-            widget.bind("<MouseWheel>", self.scroll_controls)
-            widget.bind("<Button-4>", self.scroll_controls)
-            widget.bind("<Button-5>", self.scroll_controls)
-            pending.extend(widget.winfo_children())
+        from tools.video_recording import RecordingPage
+
+        self.recording_page = RecordingPage(content, self, camera_input)
+        self.bind_panel_scroll(panel_container)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.update_segments()
         self.refresh_cameras()
@@ -1647,13 +1981,72 @@ class CameraGUI:
         root.after(0, self.poll)
 
     def show_page(self):
+        recorder = self.recording_page
+        if self.page.get() == "recording":
+            self.close_pan_control()
+            if self.motor_panel is not None:
+                self.motor_panel.stop()
+            self.heading.set("동영상 촬영")
+            self.state_badge.configure(textvariable=recorder.state)
+            self.footer.configure(textvariable=recorder.notice)
+            for widget in self.dashboard_widgets:
+                widget.grid_remove()
+            recorder.frame.grid(row=1, column=0, columnspan=2, sticky="nsew")
+            recorder.frame.focus_set()
+            recorder.update_controls()
+            return
+        recorder.stop()
+        recorder.frame.grid_remove()
+        for widget in self.dashboard_widgets:
+            widget.grid()
+        self.state_badge.configure(textvariable=self.run_state)
+        self.footer.configure(textvariable=self.status)
         learning = self.page.get() == "learning"
+        motor_panel = getattr(self, "motor_panel", None)
+        if learning and motor_panel is not None:
+            motor_panel.stop()
+        if learning:
+            self.close_pan_control()
         self.heading.set("학습 · 평가" if learning else "드론 추적")
         self.tracking_panel.grid_remove()
         self.learning_panel.grid_remove()
         panel = self.learning_panel if learning else self.tracking_panel
         panel.grid(row=0, column=0, sticky="new")
+        panel.focus_set()
         self.panel_view.yview_moveto(0)
+
+    def bind_panel_scroll(self, parent):
+        pending = [parent]
+        while pending:
+            widget = pending.pop()
+            widget.bind("<MouseWheel>", self.scroll_controls)
+            widget.bind("<Button-4>", self.scroll_controls)
+            widget.bind("<Button-5>", self.scroll_controls)
+            pending.extend(widget.winfo_children())
+
+    def close_pan_control(self):
+        if getattr(self, "pan_window", None) is not None:
+            self.pan_window.close()
+            self.pan_window = None
+
+    def open_pan_control(self, channels):
+        from tools.servo0_manual_gui import Servo0Window
+        from tools.servo01_manual_gui import Servo01Window
+
+        if self.closing or self.motor_panel.alive():
+            self.status.set("카메라 모터 연결을 종료한 뒤 수동 조작을 열어주세요.")
+            return
+        panel = Servo0Window if channels == 1 else Servo01Window
+        same_panel = type(self.pan_window) is panel
+        self.close_pan_control()
+        if not same_panel:
+            self.pan_window = panel(self.manual_container, embedded=True)
+            self.bind_panel_scroll(self.pan_window.body)
+
+    def hold_panel_scroll(self, held):
+        if self.panel_scroll_held != held:
+            self.panel_scroll_held = held
+            self.panel_scroll_until = time.monotonic() + PANEL_SCROLL_IDLE_S
 
     def scroll_panel(self, *args):
         self.panel_view.yview(*args)
@@ -1674,9 +2067,27 @@ class CameraGUI:
         automatic = self.source.get() == "video" or self.mode.get() == "YOLO 자동 검출"
         device = "Core ML" if automatic and self.use_coreml.get() else self.device.get().upper()
         self.advanced_summary.set(
-            f"임계값 {self.threshold.get()} · 장치 {device}\n"
-            f"요청 해상도 {self.resolution.get()} · 화면 {self.preview_fps.get()}fps"
+            f"임계값 {self.threshold.get()} · 장치 {device}\n화면 {self.preview_fps.get()}fps"
         )
+
+    def camera_mode_selector(self, parent):
+        from tkinter import ttk
+
+        return ttk.Spinbox(
+            parent,
+            values=tuple(self.camera_modes),
+            textvariable=self.resolution,
+            state="readonly",
+            width=14,
+            wrap=True,
+        )
+
+    def selected_camera_mode(self, default_fps):
+        value = self.resolution.get()
+        for label, (size, fps) in self.camera_modes.items():
+            if value == label or value == f"{size[0]}×{size[1]}":
+                return size, fps or default_fps
+        raise ValueError("지원하는 카메라 입력 모드를 선택하세요.")
 
     def toggle_advanced(self):
         if self.advanced_fields.winfo_manager():
@@ -1691,11 +2102,13 @@ class CameraGUI:
             return
         self.camera_row.grid_remove()
         self.video_row.grid_remove()
-        (self.video_row if self.source.get() == "video" else self.camera_row).grid(
-            row=2, sticky="ew"
+        video = self.source.get() == "video"
+        (self.video_row if video else self.camera_row).grid(row=2, sticky="ew")
+        self.flip_check.configure(
+            variable=self.video_flip_vertical if video else self.flip_vertical
         )
         self.update_segments()
-        self.update_start_button()
+        self.update_input_controls()
 
     def update_segments(self):
         for variable, buttons in (
@@ -1706,9 +2119,29 @@ class CameraGUI:
                 color = "white" if button.cget("value") == variable.get() else "#263851"
                 button.configure(foreground=color, activeforeground=color)
 
-    def update_start_button(self):
-        ready = self.video_path is not None if self.source.get() == "video" else bool(self.cameras)
-        self.start_button.configure(state="normal" if ready else "disabled")
+    @property
+    def input_idle(self):
+        return (
+            not self.closing
+            and self.session is None
+            and self.video_thread is None
+            and self.recording_page.worker is None
+        )
+
+    def update_input_controls(self):
+        idle = self.input_idle
+        cameras_ready = bool(self.cameras) and not self.scanning_cameras
+        ready = self.video_path is not None if self.source.get() == "video" else cameras_ready
+        self.start_button.configure(state="normal" if idle and ready else "disabled")
+        self.camera_select.configure(state="readonly" if idle and cameras_ready else "disabled")
+        self.camera_mode_select.configure(
+            state="readonly" if idle and cameras_ready else "disabled"
+        )
+        self.refresh_button.configure(
+            state="normal" if idle and not self.scanning_cameras else "disabled",
+            text="조회 중…" if self.scanning_cameras else "↻ 새로고침",
+        )
+        self.recording_page.update_controls()
 
     def lock_settings(self, locked):
         for widget in self.settings_widgets + self.source_buttons:
@@ -1716,14 +2149,14 @@ class CameraGUI:
                 state="disabled"
                 if locked
                 else "readonly"
-                if widget.winfo_class() == "TCombobox"
+                if widget.winfo_class() == "TSpinbox"
                 else "normal"
             )
 
     def choose_video(self):
         from tkinter import filedialog
 
-        if self.session is not None or self.closing or self.video_thread is not None:
+        if not self.input_idle:
             return
         path = filedialog.askopenfilename(
             title="추적 테스트용 로컬 드론 영상 선택 (학습하지 않음)",
@@ -1774,27 +2207,45 @@ class CameraGUI:
         )
 
     def set_observation(self, text, color="#a9bdd6"):
-        self.observation_state.set(f"●  {text}")
-        self.preview_badge.configure(foreground=color)
-        self.observed.set("●  관측 중" if text == "대상 추적 중" else "—  미관측")
+        set_if_changed(self.observation_state, f"●  {text}")
+        if self.preview_badge.cget("foreground") != color:
+            self.preview_badge.configure(foreground=color)
+        set_if_changed(self.observed, "●  관측 중" if text == "대상 추적 중" else "—  미관측")
 
     def refresh_cameras(self):
-        if self.session is not None or self.video_thread is not None:
+        if not self.input_idle or self.scanning_cameras:
             return
-        selected = self.cameras.get(self.camera.get(), {}).get("id")
-        empty_label = "연결된 카메라 없음"
+        self.scanning_cameras = True
+        self.update_input_controls()
+        threading.Thread(
+            target=self.read_camera_list, args=(self.camera_results,), daemon=True
+        ).start()
+
+    @staticmethod
+    def read_camera_list(results):
         try:
-            devices = list_cameras()
-        except RuntimeError as exc:
-            devices = []
-            empty_label = "카메라 목록 조회 실패"
-            self.status.set(str(exc))
-        else:
-            self.status.set(
-                "카메라를 선택하고 시작하세요. USB 연결 후 목록 새로고침을 누르세요."
-                if devices
-                else "연결된 카메라가 없습니다. 연결 후 목록 새로고침을 누르세요."
-            )
+            result = list_cameras(), None
+        except Exception as exc:
+            result = [], str(exc)
+        results.put_nowait(result)
+
+    def camera_changed(self, *_args):
+        name = self.cameras.get(self.camera.get(), {}).get("name")
+        if name != self.selected_camera_name:
+            if FIELD_CAMERA in (name, self.selected_camera_name):
+                self.flip_vertical.set(name == FIELD_CAMERA)
+            self.selected_camera_name = name
+
+    def finish_camera_refresh(self):
+        if self.closing:
+            return
+        try:
+            devices, error = self.camera_results.get_nowait()
+        except queue.Empty:
+            return
+        self.scanning_cameras = False
+        selected = self.cameras.get(self.camera.get(), {}).get("id")
+        empty_label = "연결된 카메라 없음" if error is None else "카메라 목록 조회 실패"
         self.cameras = {}
         for device in devices:
             label = f"{device['kind']} · {device['name']}"
@@ -1811,7 +2262,15 @@ class CameraGUI:
             if choice is not None
             else empty_label
         )
-        self.update_start_button()
+        self.camera_changed()
+        self.update_input_controls()
+        if self.session is None and self.video_thread is None and self.source.get() == "camera":
+            message = (
+                "카메라를 선택하고 시작하세요. USB 연결 후 목록 새로고침을 누르세요."
+                if devices
+                else "연결된 카메라가 없습니다. 연결 후 목록 새로고침을 누르세요."
+            )
+            self.status.set(message if error is None else error)
 
     def browse(self):
         from tkinter import filedialog
@@ -1829,7 +2288,7 @@ class CameraGUI:
     def start(self, video_path=None):
         from tkinter import messagebox
 
-        if self.session is not None or self.closing or self.video_thread is not None:
+        if not self.input_idle or (video_path is None and self.scanning_cameras):
             return
         try:
             if self.training_window is not None and self.training_window.process is not None:
@@ -1842,9 +2301,7 @@ class CameraGUI:
             threshold = float(self.threshold.get())
             if not math.isfinite(threshold) or not 0 < threshold <= 1:
                 raise ValueError("임계값은 0 초과 1 이하여야 합니다.")
-            if self.resolution.get() not in ("1920×1080", "1280×720", "640×480"):
-                raise ValueError("지원하는 입력 해상도를 선택하세요.")
-            resolution = tuple(int(value) for value in self.resolution.get().split("×"))
+            resolution, capture_fps = self.selected_camera_mode(default_fps=60)
             if self.preview_fps.get() not in ("30", "60"):
                 raise ValueError("화면 목표 FPS는 30 또는 60을 선택하세요.")
             model = None
@@ -1858,15 +2315,25 @@ class CameraGUI:
             self.selection_time = time.monotonic()
             self.canvas.delete("all")
             self.draw_empty_preview()
-            device = "coreml" if model and self.use_coreml.get() else self.device.get()
+            if video_path is not None and not video_path.is_file():
+                raise ValueError("기존 로컬 동영상 파일을 선택하세요.")
+            flip_vertical = (self.video_flip_vertical if video_path else self.flip_vertical).get()
+            backgrounds = ()
             if video_path is None:
-                self.session = CameraSession(camera, model, threshold, device, resolution)
-            else:
-                if not video_path.is_file():
-                    raise ValueError("기존 로컬 동영상 파일을 선택하세요.")
-                self.session = CameraSession(
-                    None, model, threshold, device, resolution, video_path=video_path
+                backgrounds = self.background_appearances or camera_backgrounds(
+                    camera, model, flip_vertical
                 )
+            self.session = CameraSession(
+                camera if video_path is None else None,
+                model,
+                threshold,
+                "coreml" if model and self.use_coreml.get() else self.device.get(),
+                resolution,
+                capture_fps=capture_fps,
+                video_path=video_path,
+                flip_vertical=flip_vertical,
+                background_appearances=backgrounds,
+            )
             self.metrics = self.session.metrics
             self.metrics.settings["preview_target_fps"] = int(self.preview_fps.get())
             self.save_metrics_button.configure(state="disabled")
@@ -1875,9 +2342,7 @@ class CameraGUI:
             self.video_button.configure(state="disabled")
             self.test_video_button.configure(state="disabled")
             self.pause_button.configure(state="normal" if video_path is not None else "disabled")
-            self.start_button.configure(state="disabled")
-            self.camera_select.configure(state="disabled")
-            self.refresh_button.configure(state="disabled")
+            self.update_input_controls()
             self.lock_settings(True)
             self.stop_button.configure(state="normal")
             self.clear_button.configure(state="normal" if model is None else "disabled")
@@ -1894,6 +2359,10 @@ class CameraGUI:
             messagebox.showerror("설정 확인", str(exc))
 
     def stop(self):
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.stop()
+        self.close_pan_control()
         if self.session is not None:
             self.session.request_stop()
             self.status.set("정지 중 · 입력 해제 대기…")
@@ -1930,7 +2399,7 @@ class CameraGUI:
     def test_video(self):
         from tkinter import filedialog
 
-        if self.session is not None or self.closing or self.video_thread is not None:
+        if not self.input_idle:
             return
         path = filedialog.askopenfilename(
             title="추적 테스트용 로컬 드론 영상 선택 (학습하지 않음)",
@@ -1961,20 +2430,21 @@ class CameraGUI:
         self.pause_button.configure(text="재생" if paused else "일시정지")
         self.run_state.set("●  일시정지" if paused else "●  실행 중")
 
-    def import_video(self):
+    def import_video(self, video=None, *, recorded_flip_vertical=None):
         from tkinter import filedialog
 
-        if self.session is not None or self.closing or self.video_thread is not None:
+        if not self.input_idle:
             return
         if self.training_window is not None and self.training_window.process is not None:
             from tkinter import messagebox
 
             messagebox.showerror("학습 작업 실행 중", "학습 창의 작업을 끝내거나 중지하세요.")
             return
-        video = filedialog.askopenfilename(
-            title="추가 학습용 로컬 동영상 선택",
-            filetypes=[("동영상", "*.mp4 *.mov *.avi *.mkv *.webm"), ("모든 파일", "*.*")],
-        )
+        if video is None:
+            video = filedialog.askopenfilename(
+                title="추가 학습용 로컬 동영상 선택",
+                filetypes=[("동영상", "*.mp4 *.mov *.avi *.mkv *.webm"), ("모든 파일", "*.*")],
+            )
         if not video:
             return
         parent = filedialog.askdirectory(title="추출한 원본 프레임을 저장할 폴더 선택")
@@ -1983,23 +2453,31 @@ class CameraGUI:
         from uuid import uuid4
 
         output = Path(parent) / f"video-{uuid4().hex[:12]}"
+        if self.page.get() == "recording":
+            self.page.set("learning")
+            self.show_page()
         self.video_cancel.clear()
         self.video_button.configure(state="disabled")
         self.test_video_button.configure(state="disabled")
-        self.start_button.configure(state="disabled")
         self.lock_settings(True)
         self.run_state.set("●  프레임 추출 중")
         self.status.set("동영상 프레임 추출 중 · 카메라 없이 로컬 파일을 읽습니다.")
         self.video_thread = threading.Thread(
-            target=self.extract_video, args=(video, output), daemon=True
+            target=self.extract_video, args=(video, output, recorded_flip_vertical), daemon=True
         )
+        self.update_input_controls()
         self.video_thread.start()
 
-    def extract_video(self, video, output):
+    def extract_video(self, video, output, recorded_flip_vertical=None):
         from tools.video_frames import extract_video
 
         try:
-            report = extract_video(video, output, cancel=self.video_cancel)
+            report = extract_video(
+                video,
+                output,
+                cancel=self.video_cancel,
+                recorded_flip_vertical=recorded_flip_vertical,
+            )
             self.video_results.put((output, len(report["samples"]), None))
         except Exception as exc:
             self.video_results.put((output, 0, str(exc)))
@@ -2018,7 +2496,7 @@ class CameraGUI:
         self.test_video_button.configure(state="normal")
         self.lock_settings(False)
         self.run_state.set("●  대기")
-        self.refresh_cameras()
+        self.update_input_controls()
         if error:
             self.status.set(f"동영상 가져오기 실패 · {output}")
             messagebox.showerror("동영상 가져오기 실패", error)
@@ -2075,8 +2553,16 @@ class CameraGUI:
             except (OSError, ValueError) as exc:
                 messagebox.showerror("평가 실패", str(exc))
 
+    def interrupt_manual_tracking(self):
+        self.session.manual_displayed_at = None
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.stop_tilt_tracking()
+        self.session.manual_target_lost = True
+
     def clear(self):
         if self.session and not self.session.model_path:
+            self.interrupt_manual_tracking()
             self.selection_time = time.monotonic()
             put_latest(self.session.selections, None)
             self.result = None
@@ -2093,6 +2579,8 @@ class CameraGUI:
                 and y <= event.y < y + h * self.display_scale
             ):
                 return
+            self.interrupt_manual_tracking()
+            self.canvas.focus_set()
             self.drag_start = (event.x, event.y)
             self.canvas.delete("selection")
             self.selection = self.canvas.create_rectangle(
@@ -2104,14 +2592,22 @@ class CameraGUI:
             self.canvas.coords(self.selection, *self.drag_start, event.x, event.y)
 
     def end_selection(self, event):
+        if self.drag_start is None:
+            return
+        drag_x, drag_y = self.drag_start
+        self.drag_start = None
+        self.canvas.delete("selection")
+        if self.frame is None or self.session is None:
+            return
+        if not 0 <= time.monotonic() - self.last_display <= MAX_AGE_S:
+            self.status.set("새 영상이 표시되면 드론을 다시 지정하세요.")
+            return
         import cv2
 
-        if self.drag_start is None or self.frame is None or self.session is None:
-            return
         x, y = self.display_offset
         start = (
-            (self.drag_start[0] - x) / self.display_scale,
-            (self.drag_start[1] - y) / self.display_scale,
+            (drag_x - x) / self.display_scale,
+            (drag_y - y) / self.display_scale,
         )
         end = ((event.x - x) / self.display_scale, (event.y - y) / self.display_scale)
         height, width = self.frame.shape[:2]
@@ -2126,14 +2622,15 @@ class CameraGUI:
                 put_latest(self.session.selections, (template, box, self.frame, self.last_display))
                 self.result = None
                 self.render_key = None
-        self.drag_start = None
-        self.canvas.delete("selection")
 
     def poll(self):
-        import cv2
-        from PIL import Image, ImageTk
-
+        self.finish_camera_refresh()
         self.finish_video_import()
+        if not self.closing:
+            self.recording_page.poll()
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.poll()
         session = self.session
         if session is not None:
             video_input = session.metrics.settings.get("source_type") == "video_test"
@@ -2144,8 +2641,17 @@ class CameraGUI:
             except queue.Empty:
                 pass
             now = time.monotonic()
+            manual_link = self.pan_window.link if self.pan_window is not None else None
+            pause_preview = (
+                (self.panel_scroll_held or now < self.panel_scroll_until)
+                and not video_input
+                and self.drag_start is None
+                and (motor_panel is None or not motor_panel.alive())
+                and (manual_link is None or manual_link.device is None)
+            )
             refresh_preview = (
                 video_input
+                or self.drag_start is not None
                 or now >= self.panel_scroll_until
                 or now >= self.next_scroll_preview
                 or self.preview_fps.get() == "30"
@@ -2161,9 +2667,7 @@ class CameraGUI:
                     self.video_button.configure(state="normal")
                     self.test_video_button.configure(state="normal")
                     self.pause_button.configure(state="disabled", text="일시정지")
-                    self.update_start_button()
-                    self.camera_select.configure(state="readonly")
-                    self.refresh_button.configure(state="normal")
+                    self.update_input_controls()
                     self.lock_settings(False)
                     self.stop_button.configure(state="disabled")
                     self.clear_button.configure(state="disabled")
@@ -2171,6 +2675,7 @@ class CameraGUI:
                     self.set_observation("입력 종료")
                     self.frame = None
                     self.result = None
+                    self.drag_start = None
                     self.processing_time.set("—")
                     self.canvas.delete("all")
                     self.draw_empty_preview()
@@ -2182,9 +2687,15 @@ class CameraGUI:
                             if video_input
                             else "정지 · 카메라 해제 완료"
                         )
-            elif self.drag_start is None and refresh_preview:
-                # Advance the preview frame only when its image can be drawn.
+            elif pause_preview:
+                if self.frame is not None:
+                    self.set_observation("스크롤 중 · 미리보기 대기")
+                    set_if_changed(self.status, "스크롤 중 · 미리보기 대기")
+                    set_if_changed(self.processing_time, "—")
+            elif refresh_preview:
                 self.next_scroll_preview = now + SCROLL_PREVIEW_INTERVAL_S
+                previous_display = getattr(self, "last_display", 0)
+                previous_frame = self.frame
                 try:
                     self.result = session.results.get_nowait()
                     if video_input:
@@ -2205,14 +2716,24 @@ class CameraGUI:
                 if self.frame is not None and (video_input or age <= MAX_AGE_S):
                     frame = self.frame
                     h, w = frame.shape[:2]
-                    self.actual_resolution.set(f"{w}×{h}")
+                    if (
+                        self.drag_start is not None
+                        and previous_frame is not None
+                        and (
+                            now - previous_display > MAX_AGE_S or previous_frame.shape[:2] != (h, w)
+                        )
+                    ):
+                        self.drag_start = None
+                        self.canvas.delete("selection")
+                    set_if_changed(self.actual_resolution, f"{w}×{h}")
                     paused = video_input and session.paused.is_set()
-                    self.run_state.set("●  일시정지" if paused else "●  실행 중")
-                    self.capture_info.set(
+                    set_if_changed(self.run_state, "●  일시정지" if paused else "●  실행 중")
+                    set_if_changed(
+                        self.capture_info,
                         f"영상 원본 {w}×{h} · {self.video_progress[0]:.2f}초"
                         if video_input
                         else f"실제 {w}×{h} / 요청 {session.resolution[0]}×{session.resolution[1]}"
-                        + (f" · 수동 {session.manual_engine}" if not session.model_path else "")
+                        + (f" · 수동 {session.manual_engine}" if not session.model_path else ""),
                     )
                     if video_input:
                         observation = (
@@ -2222,11 +2743,14 @@ class CameraGUI:
                             and self.result[1] == (h, w)
                             else None
                         )
-                    else:
+                    elif self.drag_start is None:
                         observation = observation_for_preview(self.result, captured, (h, w), now)
+                    else:
+                        observation = None
                     detection = observation[2] if observation else None
-                    self.processing_time.set(
-                        f"{observation[3] * 1000:.0f}ms" if observation else "—"
+                    set_if_changed(
+                        self.processing_time,
+                        f"{observation[3] * 1000:.0f}ms" if observation else "—",
                     )
                     state = "대상 추적 중" if detection else "대상 미관측"
                     if observation and not detection:
@@ -2260,33 +2784,68 @@ class CameraGUI:
                     # Published frames stay unchanged; only pixel inputs invalidate the image.
                     render_key = (captured, id(frame), box, region, canvas_size)
                     if render_key != self.render_key:
-                        rendered = frame.copy()
+                        import cv2
+                        from PIL import Image, ImageTk
+
+                        scale = min(canvas_size[0] / w, canvas_size[1] / h)
+                        size = (max(1, int(w * scale)), max(1, int(h * scale)))
+                        preview = cv2.resize(frame, size, interpolation=cv2.INTER_LINEAR)
+
+                        def preview_point(point):
+                            x, y = point
+                            return x * size[0] // w, y * size[1] // h
+
+                        # Draw after resizing so downsampling cannot erase thin overlays.
+                        crosshair = preview_point((w // 2, h // 2))
                         cv2.drawMarker(
-                            rendered, (w // 2, h // 2), (255, 255, 255), cv2.MARKER_CROSS, 20, 1
+                            preview,
+                            crosshair,
+                            (255, 255, 255),
+                            cv2.MARKER_CROSS,
+                            max(1, int(20 * scale)),
+                            1,
                         )
                         if region is not None:
-                            cv2.rectangle(rendered, region[:2], region[2:], (255, 180, 0), 1)
+                            cv2.rectangle(
+                                preview,
+                                preview_point(region[:2]),
+                                preview_point(region[2:]),
+                                (255, 180, 0),
+                                1,
+                            )
                         if box is not None:
-                            cv2.rectangle(rendered, box[:2], box[2:], (80, 220, 80), 2)
-                            cv2.line(rendered, (w // 2, h // 2), center, (80, 220, 80), 1)
-                        self.display_scale = min(canvas_size[0] / w, canvas_size[1] / h)
-                        size = (
-                            max(1, int(w * self.display_scale)),
-                            max(1, int(h * self.display_scale)),
-                        )
-                        preview = cv2.resize(rendered, size, interpolation=cv2.INTER_AREA)
+                            cv2.rectangle(
+                                preview,
+                                preview_point(box[:2]),
+                                preview_point(box[2:]),
+                                (80, 220, 80),
+                                max(1, round(2 * scale)),
+                            )
+                            cv2.line(preview, crosshair, preview_point(center), (80, 220, 80), 1)
                         rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
                         self.photo = ImageTk.PhotoImage(Image.fromarray(rgb))
-                        self.canvas.delete("all")
-                        self.display_offset = (
+                        offset = (
                             (canvas_size[0] - size[0]) // 2,
                             (canvas_size[1] - size[1]) // 2,
                         )
+                        if self.drag_start is not None and (
+                            scale != self.display_scale or offset != self.display_offset
+                        ):
+                            self.drag_start = None
+                        self.canvas.delete("all" if self.drag_start is None else "preview")
+                        self.display_scale, self.display_offset = scale, offset
                         self.canvas.create_image(
-                            *self.display_offset, anchor="nw", image=self.photo
+                            *offset, anchor="nw", image=self.photo, tags="preview"
                         )
+                        if self.drag_start is not None:
+                            self.canvas.tag_lower("preview")
+                        if not session.model_path:
+                            # Paint the selected frame before Tk can process a mouse release.
+                            self.canvas.update_idletasks()
                         self.render_key = render_key
                         session.metrics.displayed(captured, time.monotonic())
+                    if not session.model_path:
+                        session.manual_displayed_at = observation[0] if detection else None
                     processing = (
                         f" · 추적 처리 {observation[3] * 1000:.0f}ms" if observation else ""
                     )
@@ -2296,18 +2855,20 @@ class CameraGUI:
                     if video_input:
                         state = "일시정지" if session.paused.is_set() else "재생"
                         count = self.video_progress[1]
-                        self.status.set(
+                        set_if_changed(
+                            self.status,
                             f"영상 테스트 {state} · {count}/"
                             f"{session.metrics.settings['video_frame_count']}프레임 · "
-                            f"{info}{processing}"
+                            f"{info}{processing}",
                         )
                         if observation is not None:
                             session.video_displayed = captured
                             session.display_ack.set()
                     else:
                         self.status.set(f"{info}{processing} · 영상 {age * 1000:.0f}ms")
-                elif age > MAX_AGE_S:
+                elif self.frame is not None:
                     self.frame = None
+                    self.drag_start = None
                     self.canvas.delete("all")
                     self.set_observation("새 영상 대기")
                     self.run_state.set("●  입력 대기")
@@ -2315,23 +2876,29 @@ class CameraGUI:
                     self.draw_empty_preview()
                     self.status.set("새 영상 대기 · 대상 관측 무효")
             controller = getattr(session, "pan_tilt", None)
-            command = controller.snapshot() if controller is not None else None
-            self.performance.set(performance_text(session.metrics.snapshot()))
+            command = controller.snapshot(blocking=False) if controller is not None else None
+            performance = performance_text(session.metrics.snapshot())
             if command is not None:
                 limit = " · 범위 제한" if command.saturated else ""
-                self.performance.set(
-                    self.performance.get()
-                    + f" · 모의 {command.state}: 팬 {command.pan_deg:.1f}° / "
-                    f"틸트 {command.tilt_deg:.1f}°{limit}"
-                )
+                if getattr(controller, "nominal_ticks", False):
+                    pan_tick = round(330 - command.pan_deg / 0.72)
+                    tilt_tick = round(330 - command.tilt_deg / 0.72)
+                    performance += (
+                        f" · 모터 목표 {command.state}: 0번 {pan_tick} / 1번 {tilt_tick}틱{limit}"
+                    )
+                else:
+                    performance += (
+                        f" · 모의 {command.state}: 팬 {command.pan_deg:.1f}° / "
+                        f"틸트 {command.tilt_deg:.1f}°{limit}"
+                    )
             if session.collector is not None:
                 collector = session.collector
-                self.performance.set(
-                    self.performance.get()
-                    + f" · 학습 PNG {len(collector.samples)}장"
+                performance += (
+                    f" · 학습 PNG {len(collector.samples)}장"
                     + f" / 저장 큐 누락 {collector.dropped}"
                     + (f" · 저장 오류: {collector.error}" if collector.error else "")
                 )
+            set_if_changed(self.performance, performance)
         now = time.monotonic()
         fps = 30 if self.preview_fps.get() == "30" else 60
         # Keep the cadence across render time; do not queue missed refreshes.
@@ -2356,46 +2923,64 @@ class CameraGUI:
         if self.training_window is not None and self.training_window.window.winfo_exists():
             self.training_window.window.lift()
         else:
-            self.training_window = TrainingWindow(
-                self.root, can_run=lambda: self.session is None and self.video_thread is None
-            )
+            self.training_window = TrainingWindow(self.root, can_run=lambda: self.input_idle)
 
     def close(self):
+        if self.closing:
+            return
+        self.closing = True
+        motor_panel = getattr(self, "motor_panel", None)
+        if motor_panel is not None:
+            motor_panel.stop()
+        self.close_pan_control()
         if (
             self.label_editor is not None
             and self.label_editor.window.winfo_exists()
             and not self.label_editor.request_close()
         ):
+            self.closing = False
             return
         if (
             self.training_window is not None
             and self.training_window.window.winfo_exists()
             and not self.training_window.request_close()
         ):
+            self.closing = False
             if self.training_window.closing:
                 self.root.after(50, self.close)
             return
-        self.closing = True
         self.video_cancel.set()
+        self.recording_page.stop()
         self.stop()
+        self.finish_close()
+
+    def finish_close(self):
+        motor_panel = getattr(self, "motor_panel", None)
+        self.recording_page.poll()
         if (
             self.session
             and self.session.alive()
             or self.video_thread
             and self.video_thread.is_alive()
+            or motor_panel is not None
+            and motor_panel.alive()
+            or self.recording_page.worker is not None
         ):
-            self.root.after(50, self.close)
+            self.root.after(50, self.finish_close)
         else:
             if self.session is not None:
                 self.session.finish()
+            self.scanning_cameras = False
             self.root.destroy()
 
 
-def main():
+def main(*, manual_channels=None):
     import tkinter as tk
 
     root = tk.Tk()
-    CameraGUI(root)
+    app = CameraGUI(root)
+    if manual_channels is not None:
+        app.open_pan_control(manual_channels)
     root.mainloop()
 
 
