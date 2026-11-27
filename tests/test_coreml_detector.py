@@ -1,6 +1,7 @@
 """Exercise Core ML selection and cache contracts without Apple hardware."""
 
 import json
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,25 @@ def test_bundle_must_match_selected_checkpoint(monkeypatch, tmp_path):
     weights.write_bytes(b"updated")
     with pytest.raises(ValueError, match="변환본을 준비"):
         detector.read_bundle(weights, sha256(weights))
+
+
+def test_preparation_command_keeps_model_path_as_one_argument(monkeypatch, tmp_path):
+    monkeypatch.setattr(detector, "CACHE_DIR", tmp_path / "cache")
+    weights = tmp_path / """field model $(sample) '"drone".pt"""
+    with pytest.raises(ValueError, match="변환본을 준비") as error:
+        detector.read_bundle(weights, "0" * 64)
+    command = str(error.value).split(detector.PREPARE_COMMAND, 1)[1]
+    assert shlex.split(command) == ["--model", str(weights)]
+
+
+def test_damaged_bundle_reports_recovery_and_preserves_files(monkeypatch, tmp_path):
+    weights, bundle = install_bundle(monkeypatch, tmp_path)
+    receipt = bundle / "source.json"
+    receipt.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="폴더를 옮긴 뒤") as error:
+        detector.read_bundle(weights, sha256(weights))
+    assert str(bundle) in str(error.value)
+    assert receipt.read_text(encoding="utf-8") == "{}"
 
 
 @pytest.mark.parametrize(

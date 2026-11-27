@@ -3,6 +3,7 @@
 import argparse
 import json
 import platform
+import shlex
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -64,9 +65,13 @@ def read_bundle(weights, digest):
         ):
             raise ValueError("invalid Core ML bundle")
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ValueError(
-            f'이 모델의 Core ML 변환본을 준비하세요. {PREPARE_COMMAND} --model "{weights}"'
-        ) from exc
+        command = f"{PREPARE_COMMAND} --model {shlex.quote(str(weights))}"
+        if bundle.exists() or bundle.is_symlink():
+            raise ValueError(
+                f"Core ML 변환본이 손상됐습니다. 다음 폴더를 옮긴 뒤 다시 준비하세요.\n"
+                f"{bundle}\n{command}"
+            ) from exc
+        raise ValueError(f"이 모델의 Core ML 변환본을 준비하세요. {command}") from exc
     return bundle, labels
 
 
